@@ -44,7 +44,7 @@ stand from the camera.
 | Voice cues | **AVSpeechSynthesizer** | Hands-free feedback between serves |
 | Analysis core | Swift package `ServeAnalysis` | Pure Swift, platform-independent, unit-tested |
 | Tests | **XCTest** via `swift test` | Also runs on Linux/CI without a simulator |
-| Project | **XcodeGen** (`project.yml`) | No hand-edited `.xcodeproj` in git |
+| Project | Plain Xcode project with folder-synced groups | Open and run, no extra tools. New files in `App/ServeCoach/` show up automatically |
 
 ## Project layout
 
@@ -52,8 +52,8 @@ stand from the camera.
 Package.swift                  # ServeAnalysis Swift package
 Sources/ServeAnalysis/         # Geometry, posture checks, serve tracking (no Apple frameworks)
 Tests/ServeAnalysisTests/      # Unit tests for the analysis
+App/ServeCoach.xcodeproj       # Xcode project for the iOS app (open this)
 App/ServeCoach/                # iOS app: camera, Vision, AI coach, SwiftUI screens
-project.yml                    # XcodeGen spec for the iOS app
 ```
 
 ## Getting started
@@ -61,14 +61,12 @@ project.yml                    # XcodeGen spec for the iOS app
 Requirements: a Mac with **Xcode 26** and an iPhone running iOS 17 or later. The AI coach needs
 iOS 26 on an Apple Intelligence device (iPhone 15 Pro or newer). Other devices get the built-in coach.
 
-```bash
-brew install xcodegen
-xcodegen generate
-open ServeCoach.xcodeproj
-```
+1. Open `App/ServeCoach.xcodeproj` in Xcode.
+2. Choose the **ServeCoach** target, then *Signing & Capabilities*, and pick your team. You can
+   change the bundle ID `com.example.ServeCoach` to something unique.
+3. Plug in your iPhone, select it as the run destination, and press **Run** (⌘R).
 
-Select your team under *Signing & Capabilities*, then run on a real iPhone. The camera doesn't work
-in the simulator.
+Use a real iPhone, because the camera doesn't work in the simulator.
 
 Run the analysis tests (macOS or Linux):
 

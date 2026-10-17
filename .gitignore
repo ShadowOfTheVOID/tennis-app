@@ -3,6 +3,3 @@
 .swiftpm/
 DerivedData/
 xcuserdata/
-*.xcodeproj/
-*.xcworkspace/
-!Package.swift
