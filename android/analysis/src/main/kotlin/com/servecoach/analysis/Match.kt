@@ -52,7 +52,7 @@ data class MatchReport(
 
 object MatchAnalyzer {
     /** Average adult shoulder-to-hip length, used to turn torso lengths into rough metres. */
-    private const val TORSO_METERS = 0.5
+    internal const val TORSO_METERS = 0.5
 
     /** Find and grade every stroke the player hits in [frames], plus footwork and movement. */
     fun analyze(frames: List<Frame>, hand: Handedness): MatchReport {

@@ -204,7 +204,20 @@ object ServeAnalyzer {
 
     fun analyze(frames: List<Frame>, hand: Handedness): ServeResult {
         val (t, c) = keyFrames(frames, hand)
-        return ServeResult(t, c, t?.let { trophy(it.pose, hand) }, c?.let { contact(it.pose, hand) })
+        return ServeResult(
+            t, c, t?.let { trophy(it.pose, hand) }, c?.let { contact(it.pose, hand) },
+            swingSpeed = c?.let { StrokeAnalyzer.handSpeed(frames, it.time, hand) },
+            direction = t?.let { facing(it.pose, hand) } ?: 1.0,
+        )
+    }
+
+    /** A server stands side-on facing the net, which is where the tossing shoulder points. */
+    internal fun facing(pose: Pose, hand: Handedness): Double? {
+        val (hit, toss) = pose.sides(hand)
+        val h = hit.shoulder ?: return null
+        val t = toss.shoulder ?: return null
+        if (t.x == h.x) return null
+        return if (t.x > h.x) 1.0 else -1.0
     }
 
     // Helpers

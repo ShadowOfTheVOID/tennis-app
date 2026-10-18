@@ -2,7 +2,7 @@ import XCTest
 @testable import ServeAnalysis
 
 /// Build a pose in pixel space; unspecified joints get a neutral standing position.
-private func makePose(_ overrides: [Joint: (Double, Double)] = [:]) -> Pose {
+func makePose(_ overrides: [Joint: (Double, Double)] = [:]) -> Pose {
     let base: [Joint: (Double, Double)] = [
         .nose: (300, 100),
         .leftShoulder: (330, 160), .rightShoulder: (270, 160),
@@ -16,13 +16,13 @@ private func makePose(_ overrides: [Joint: (Double, Double)] = [:]) -> Pose {
     return Pose(joints: merged.mapValues { Point(x: $0.0, y: $0.1, confidence: 0.9) })
 }
 
-private let goodTrophy = makePose([
+let goodTrophy = makePose([
     .leftShoulder: (330, 150), .leftElbow: (340, 80), .leftWrist: (350, 10),
     .rightShoulder: (270, 175), .rightElbow: (210, 170), .rightWrist: (210, 110),
     .leftKnee: (340, 370), .rightKnee: (300, 370),
 ])
 
-private let goodContact = makePose([
+let goodContact = makePose([
     .rightShoulder: (275, 150), .rightElbow: (285, 55), .rightWrist: (295, -40),
     .leftElbow: (340, 190), .leftWrist: (310, 200),
 ])

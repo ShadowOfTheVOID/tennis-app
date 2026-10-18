@@ -37,7 +37,20 @@ data class StrokeResult(
     val twoHanded: Boolean = false,
     /** Whether a split step was seen before the stroke (match analysis only). */
     val splitStep: Boolean? = null,
+    /** Peak hitting-hand speed around contact, in metres per second (an estimate of power). */
+    val swingSpeed: Double? = null,
+    /** +1 when the swing moves right in the image, -1 when it moves left. Used to line up ghost poses. */
+    val direction: Double = 1.0,
 ) {
+    /** Serve rhythm: seconds from the trophy position to contact. */
+    val tempo: Double?
+        get() {
+            if (type != StrokeType.SERVE) return null
+            val trophy = frame(Phase.TROPHY) ?: return null
+            val contact = frame(Phase.CONTACT) ?: return null
+            return contact.time - trophy.time
+        }
+
     val title: String get() = if (twoHanded && type == StrokeType.BACKHAND) "Two-handed backhand" else type.title
 
     fun frame(phase: Phase) = keyFrames.firstOrNull { it.phase == phase }?.frame
@@ -63,6 +76,8 @@ val ServeResult.stroke: StrokeResult
         time = contactFrame?.time ?: trophyFrame?.time ?: 0.0,
         keyFrames = listOfNotNull(trophyFrame?.let { KeyFrame(Phase.TROPHY, it) }, contactFrame?.let { KeyFrame(Phase.CONTACT, it) }),
         evaluations = listOfNotNull(trophy, contact),
+        swingSpeed = swingSpeed,
+        direction = direction,
     )
 
 /** A fast swing of the hitting arm: almost always a stroke, with contact near the peak speed. */
@@ -81,25 +96,7 @@ object StrokeAnalyzer {
     /** Every swing in [frames], in time order. */
     fun swings(frames: List<Frame>, hand: Handedness): List<SwingEvent> {
         if (frames.size < 3) return emptyList()
-        val scale = medianTorso(frames) ?: return emptyList()
-        // Hand position relative to the hips, so running across the court isn't mistaken for a swing.
-        val relative = frames.map { f ->
-            val w = hitWrist(f.pose, hand)
-            val hip = hipMid(f.pose)
-            if (w == null || hip == null) null else Point(w.x - hip.x, w.y - hip.y)
-        }
-        val speed = DoubleArray(frames.size)
-        for (i in 1 until frames.size) {
-            val a = relative[i - 1] ?: continue
-            val b = relative[i] ?: continue
-            val dt = frames[i].time - frames[i - 1].time
-            if (dt <= 0 || dt >= 0.5) continue
-            val step = Geometry.distance(a, b)
-            // A one-frame jump that comes straight back is a tracking glitch, not a swing.
-            val c = relative.getOrNull(i + 1)
-            if (c != null && step > 0 && Geometry.distance(a, c) < 0.5 * step) continue
-            speed[i] = step / scale / dt
-        }
+        val speed = handSpeeds(frames, hand)
         // Peaks: fast enough, and the fastest within 0.6 s either side (ties go to the earlier frame).
         val candidates = speed.indices.filter { i ->
             if (speed[i] < MIN_SWING_SPEED) return@filter false
@@ -120,6 +117,43 @@ object StrokeAnalyzer {
             if (kept.none { abs(it.time - frames[i].time) < 0.9 }) kept += SwingEvent(i, frames[i].time, speed[i])
         }
         return kept.sortedBy { it.time }
+    }
+
+    /**
+     * Hitting-hand speed at each frame, in torso lengths per second, measured relative to the hips
+     * so running across the court isn't mistaken for a swing. Zero where it can't be measured.
+     */
+    internal fun handSpeeds(frames: List<Frame>, hand: Handedness): DoubleArray {
+        val speed = DoubleArray(frames.size)
+        if (frames.size < 2) return speed
+        val scale = medianTorso(frames) ?: return speed
+        val relative = frames.map { f ->
+            val w = hitWrist(f.pose, hand)
+            val hip = hipMid(f.pose)
+            if (w == null || hip == null) null else Point(w.x - hip.x, w.y - hip.y)
+        }
+        for (i in 1 until frames.size) {
+            val a = relative[i - 1] ?: continue
+            val b = relative[i] ?: continue
+            val dt = frames[i].time - frames[i - 1].time
+            if (dt <= 0 || dt >= 0.5) continue
+            val step = Geometry.distance(a, b)
+            // A one-frame jump that comes straight back is a tracking glitch, not a swing.
+            val c = relative.getOrNull(i + 1)
+            if (c != null && step > 0 && Geometry.distance(a, c) < 0.5 * step) continue
+            speed[i] = step / scale / dt
+        }
+        return speed
+    }
+
+    /**
+     * Peak hitting-hand speed within a quarter second of [time], in metres per second. An estimate:
+     * it assumes an average 0.5 m shoulder-to-hip length. The racket head moves faster.
+     */
+    fun handSpeed(frames: List<Frame>, time: Double, hand: Handedness): Double? {
+        val speeds = handSpeeds(frames, hand)
+        val peak = frames.indices.filter { abs(frames[it].time - time) <= 0.25 }.maxOfOrNull { speeds[it] } ?: 0.0
+        return if (peak > 0) peak * MatchAnalyzer.TORSO_METERS else null
     }
 
     /** Which stroke a swing was, judged from body position alone (no ball or racket tracking). */
@@ -214,7 +248,10 @@ object StrokeAnalyzer {
                 keyFrames += KeyFrame(Phase.FINISH, finish)
             }
         }
-        return StrokeResult(kind, t, keyFrames, evaluations, twoHanded = kind == StrokeType.BACKHAND && twoHanded)
+        return StrokeResult(
+            kind, t, keyFrames, evaluations, twoHanded = kind == StrokeType.BACKHAND && twoHanded,
+            swingSpeed = handSpeed(frames, t, hand), direction = d,
+        )
     }
 
     /** Analyse the fastest swing in a short clip of one stroke. Null if no swing was found. */

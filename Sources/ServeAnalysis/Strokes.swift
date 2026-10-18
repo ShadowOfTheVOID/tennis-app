@@ -45,6 +45,16 @@ public struct StrokeResult: Sendable {
     public var twoHanded = false
     /// Whether a split step was seen before the stroke (match analysis only).
     public var splitStep: Bool?
+    /// Peak hitting-hand speed around contact, in metres per second (an estimate of power).
+    public var swingSpeed: Double?
+    /// +1 when the swing moves right in the image, -1 when it moves left. Used to line up ghost poses.
+    public var direction: Double = 1
+
+    /// Serve rhythm: seconds from the trophy position to contact.
+    public var tempo: Double? {
+        guard type == .serve, let trophy = frame(for: .trophy), let contact = frame(for: .contact) else { return nil }
+        return contact.time - trophy.time
+    }
 
     public init(type: StrokeType, time: Double, keyFrames: [KeyFrame], evaluations: [Evaluation], twoHanded: Bool = false) {
         self.type = type
@@ -81,12 +91,15 @@ extension ServeResult {
         var keyFrames: [KeyFrame] = []
         if let trophyFrame { keyFrames.append(KeyFrame(phase: .trophy, frame: trophyFrame)) }
         if let contactFrame { keyFrames.append(KeyFrame(phase: .contact, frame: contactFrame)) }
-        return StrokeResult(
+        var result = StrokeResult(
             type: .serve,
             time: contactFrame?.time ?? trophyFrame?.time ?? 0,
             keyFrames: keyFrames,
             evaluations: [trophy, contact].compactMap { $0 }
         )
+        result.swingSpeed = swingSpeed
+        result.direction = direction
+        return result
     }
 }
 
@@ -108,22 +121,8 @@ public enum StrokeAnalyzer {
 
     /// Every swing in `frames`, in time order.
     public static func swings(in frames: [Frame], hand: Handedness) -> [SwingEvent] {
-        guard frames.count >= 3, let scale = medianTorso(frames) else { return [] }
-        // Hand position relative to the hips, so running across the court isn't mistaken for a swing.
-        let relative = frames.map { f -> Point? in
-            guard let w = hitWrist(f, hand), let hip = hipMid(f.pose) else { return nil }
-            return Point(x: w.x - hip.x, y: w.y - hip.y)
-        }
-        var speed = [Double](repeating: 0, count: frames.count)
-        for i in 1..<frames.count {
-            guard let a = relative[i - 1], let b = relative[i] else { continue }
-            let dt = frames[i].time - frames[i - 1].time
-            guard dt > 0, dt < 0.5 else { continue }
-            let step = Geometry.distance(a, b)
-            // A one-frame jump that comes straight back is a tracking glitch, not a swing.
-            if i + 1 < frames.count, let c = relative[i + 1], step > 0, Geometry.distance(a, c) < 0.5 * step { continue }
-            speed[i] = step / scale / dt
-        }
+        guard frames.count >= 3 else { return [] }
+        let speed = handSpeeds(frames, hand: hand)
         // Peaks: fast enough, and the fastest within 0.6 s either side (ties go to the earlier frame).
         let candidates = speed.indices.filter { i in
             guard speed[i] >= minSwingSpeed else { return false }
@@ -144,6 +143,35 @@ public enum StrokeAnalyzer {
             kept.append(SwingEvent(index: i, time: frames[i].time, speed: speed[i]))
         }
         return kept.sorted { $0.time < $1.time }
+    }
+
+    /// Hitting-hand speed at each frame, in torso lengths per second, measured relative to the hips
+    /// so running across the court isn't mistaken for a swing. Zero where it can't be measured.
+    static func handSpeeds(_ frames: [Frame], hand: Handedness) -> [Double] {
+        var speed = [Double](repeating: 0, count: frames.count)
+        guard frames.count >= 2, let scale = medianTorso(frames) else { return speed }
+        let relative = frames.map { f -> Point? in
+            guard let w = hitWrist(f, hand), let hip = hipMid(f.pose) else { return nil }
+            return Point(x: w.x - hip.x, y: w.y - hip.y)
+        }
+        for i in 1..<frames.count {
+            guard let a = relative[i - 1], let b = relative[i] else { continue }
+            let dt = frames[i].time - frames[i - 1].time
+            guard dt > 0, dt < 0.5 else { continue }
+            let step = Geometry.distance(a, b)
+            // A one-frame jump that comes straight back is a tracking glitch, not a swing.
+            if i + 1 < frames.count, let c = relative[i + 1], step > 0, Geometry.distance(a, c) < 0.5 * step { continue }
+            speed[i] = step / scale / dt
+        }
+        return speed
+    }
+
+    /// Peak hitting-hand speed within a quarter second of `time`, in metres per second.
+    /// An estimate: it assumes an average 0.5 m shoulder-to-hip length. The racket head moves faster.
+    public static func handSpeed(_ frames: [Frame], near time: Double, hand: Handedness) -> Double? {
+        let speeds = handSpeeds(frames, hand: hand)
+        let peak = frames.indices.filter { abs(frames[$0].time - time) <= 0.25 }.map { speeds[$0] }.max() ?? 0
+        return peak > 0 ? peak * MatchAnalyzer.torsoMeters : nil
     }
 
     /// Which stroke a swing was, judged from body position alone (no ball or racket tracking).
@@ -236,8 +264,11 @@ public enum StrokeAnalyzer {
                 keyFrames.append(KeyFrame(phase: .finish, frame: finish))
             }
         }
-        return StrokeResult(type: kind, time: t, keyFrames: keyFrames, evaluations: evaluations,
-                            twoHanded: kind == .backhand && classified.twoHanded)
+        var result = StrokeResult(type: kind, time: t, keyFrames: keyFrames, evaluations: evaluations,
+                                  twoHanded: kind == .backhand && classified.twoHanded)
+        result.swingSpeed = handSpeed(frames, near: t, hand: hand)
+        result.direction = d
+        return result
     }
 
     /// Analyse the fastest swing in a short clip of one stroke. Nil if no swing was found.

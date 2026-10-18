@@ -20,19 +20,47 @@ data class PracticeRecord(
     /** The most important thing to fix, if any. */
     val topFix: String?,
     val handedness: String,
+    val checks: List<CheckSnapshot> = emptyList(),
+    /** Peak hitting-hand speed in metres per second (estimated). */
+    val swingSpeed: Double? = null,
+    /** Serve rhythm: seconds from trophy position to contact. */
+    val tempo: Double? = null,
+    /** Which way the player faced (+1 right, -1 left), for lining up ghost poses. */
+    val direction: Double? = null,
+    /** Pose at each key moment (phase key → joint key → [x, y, confidence]), for the ghost overlay. */
+    val keyPoses: Map<String, Map<String, List<Double>>> = emptyMap(),
 ) {
+    /** One check's result, kept so progress can be charted per check. */
+    @Serializable
+    data class CheckSnapshot(val id: String, val label: String, /** A [Status] key, e.g. "good". */ val status: String)
+
     /** "Forehand", "Match", ... */
     val title: String get() = StrokeType.entries.firstOrNull { it.key == kind }?.title ?: "Match"
+
+    /** The saved pose at [phase], if any. */
+    fun pose(phase: Phase): Pose? {
+        val joints = keyPoses[phase.key] ?: return null
+        return Pose(joints.mapNotNull { (name, v) ->
+            val joint = Joint.entries.firstOrNull { it.key == name } ?: return@mapNotNull null
+            if (v.size != 3) null else joint to Point(v[0], v[1], v[2])
+        }.toMap())
+    }
 
     companion object {
         const val MATCH_KIND = "match"
 
-        fun of(stroke: StrokeResult, hand: Handedness) = PracticeRecord(
+        fun of(stroke: StrokeResult, hand: Handedness, date: Long = System.currentTimeMillis()) = PracticeRecord(
+            date = date,
             kind = stroke.type.key,
             score = stroke.score,
             detail = stroke.evaluations.joinToString(" · ") { "${it.phase.title} ${it.score ?: "—"}" },
             topFix = stroke.topTip?.label,
             handedness = hand.name.lowercase(),
+            checks = stroke.checks.map { CheckSnapshot(it.id, it.label, it.status.name.lowercase()) },
+            swingSpeed = stroke.swingSpeed,
+            tempo = stroke.tempo,
+            direction = stroke.direction,
+            keyPoses = stroke.keyFrames.associate { k -> k.phase.key to k.frame.pose.joints.entries.associate { (j, p) -> j.key to listOf(p.x, p.y, p.confidence) } },
         )
 
         fun of(match: MatchReport, hand: Handedness) = PracticeRecord(
@@ -41,9 +69,15 @@ data class PracticeRecord(
             detail = match.countsText,
             topFix = Coach.ruleBased(match).improvements.firstOrNull()?.title,
             handedness = hand.name.lowercase(),
+            swingSpeed = match.strokes.mapNotNull { it.swingSpeed }.maxOrNull(),
         )
     }
 }
+
+/** Lowercase-first camel name, matching the Swift raw values (e.g. `leftShoulder`, `trophy`). */
+internal fun camel(name: String) = name.lowercase().split('_').mapIndexed { i, part -> if (i == 0) part else part.replaceFirstChar { it.uppercase() } }.joinToString("")
+val Joint.key: String get() = camel(name)
+val Phase.key: String get() = camel(name)
 
 /** Keeps practice history in a JSON file on the device. */
 class HistoryStore(private val file: File) {

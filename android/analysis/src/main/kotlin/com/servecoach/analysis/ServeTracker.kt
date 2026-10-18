@@ -6,6 +6,10 @@ data class ServeResult(
     val contactFrame: Frame?,
     val trophy: Evaluation?,
     val contact: Evaluation?,
+    /** Peak hitting-hand speed around contact, in metres per second (an estimate). */
+    val swingSpeed: Double? = null,
+    /** +1 when the server faces right in the image, -1 when facing left. */
+    val direction: Double = 1.0,
 ) {
     /** Average of the trophy and contact scores that could be measured. */
     val score: Int?

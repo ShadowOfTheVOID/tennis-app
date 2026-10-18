@@ -4,16 +4,33 @@ import Foundation
 public struct PracticeRecord: Codable, Identifiable, Sendable, Equatable {
     public static let matchKind = "match"
 
+    /// One check's result, kept so progress can be charted per check.
+    public struct CheckSnapshot: Codable, Sendable, Equatable {
+        public let id: String
+        public let label: String
+        /// A `Status` raw value.
+        public let status: String
+    }
+
     public let id: UUID
     public let date: Date
     /// A `StrokeType` raw value, or `matchKind`.
     public let kind: String
     public let score: Int?
-    /// One line of detail, e.g. "Trophy 80 · Contact 60" or "38 strokes in 9 rallies".
+    /// One line of detail, e.g. "Trophy position 80 · Contact 60" or "38 strokes in about 9 rallies".
     public let detail: String
     /// The most important thing to fix, if any.
     public let topFix: String?
     public let handedness: String
+    public let checks: [CheckSnapshot]
+    /// Peak hitting-hand speed in metres per second (estimated).
+    public let swingSpeed: Double?
+    /// Serve rhythm: seconds from trophy position to contact.
+    public let tempo: Double?
+    /// Which way the player faced (+1 right, -1 left), for lining up ghost poses.
+    public let direction: Double?
+    /// Pose at each key moment (phase raw value → joint raw value → [x, y, confidence]), for the ghost overlay.
+    public let keyPoses: [String: [String: [Double]]]
 
     public init(id: UUID = UUID(), date: Date = Date(), stroke: StrokeResult, hand: Handedness) {
         self.id = id
@@ -23,6 +40,11 @@ public struct PracticeRecord: Codable, Identifiable, Sendable, Equatable {
         detail = stroke.evaluations.map { "\($0.phase.title) \($0.score.map(String.init) ?? "—")" }.joined(separator: " · ")
         topFix = stroke.topTip?.label
         handedness = hand.rawValue
+        checks = stroke.checks.map { CheckSnapshot(id: $0.id, label: $0.label, status: $0.status.rawValue) }
+        swingSpeed = stroke.swingSpeed
+        tempo = stroke.tempo
+        direction = stroke.direction
+        keyPoses = Dictionary(stroke.keyFrames.map { ($0.phase.rawValue, Self.encode($0.frame.pose)) }, uniquingKeysWith: { a, _ in a })
     }
 
     public init(id: UUID = UUID(), date: Date = Date(), match: MatchReport, hand: Handedness) {
@@ -33,10 +55,51 @@ public struct PracticeRecord: Codable, Identifiable, Sendable, Equatable {
         detail = match.countsText
         topFix = Coach.ruleBased(match).improvements.first?.title
         handedness = hand.rawValue
+        checks = []
+        let speeds = match.strokes.compactMap(\.swingSpeed)
+        swingSpeed = speeds.max()
+        tempo = nil
+        direction = nil
+        keyPoses = [:]
     }
 
     /// "Forehand", "Match", ...
     public var title: String { StrokeType(rawValue: kind)?.title ?? "Match" }
+
+    /// The saved pose at `phase`, if any.
+    public func pose(at phase: Phase) -> Pose? {
+        guard let joints = keyPoses[phase.rawValue] else { return nil }
+        var decoded: [Joint: Point] = [:]
+        for (name, v) in joints {
+            guard let joint = Joint(rawValue: name), v.count == 3 else { continue }
+            decoded[joint] = Point(x: v[0], y: v[1], confidence: v[2])
+        }
+        return Pose(joints: decoded)
+    }
+
+    static func encode(_ pose: Pose) -> [String: [Double]] {
+        Dictionary(pose.joints.map { ($0.key.rawValue, [$0.value.x, $0.value.y, $0.value.confidence]) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, date, kind, score, detail, topFix, handedness, checks, swingSpeed, tempo, direction, keyPoses
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        date = try c.decode(Date.self, forKey: .date)
+        kind = try c.decode(String.self, forKey: .kind)
+        score = try c.decodeIfPresent(Int.self, forKey: .score)
+        detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        topFix = try c.decodeIfPresent(String.self, forKey: .topFix)
+        handedness = try c.decodeIfPresent(String.self, forKey: .handedness) ?? Handedness.right.rawValue
+        checks = try c.decodeIfPresent([CheckSnapshot].self, forKey: .checks) ?? []
+        swingSpeed = try c.decodeIfPresent(Double.self, forKey: .swingSpeed)
+        tempo = try c.decodeIfPresent(Double.self, forKey: .tempo)
+        direction = try c.decodeIfPresent(Double.self, forKey: .direction)
+        keyPoses = try c.decodeIfPresent([String: [String: [Double]]].self, forKey: .keyPoses) ?? [:]
+    }
 }
 
 /// Keeps practice history in a JSON file on the device.
