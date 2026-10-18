@@ -52,6 +52,8 @@ struct MatchView: View {
                 }
             }
 
+            BallSection(match: match, hand: hand)
+
             Section {
                 if let coach = app.reports[match.id] {
                     CoachReportView(report: coach, score: report.score, labels: [:])
@@ -90,7 +92,7 @@ struct MatchView: View {
     private func open(_ stroke: StrokeResult) {
         opening = stroke.time
         Task {
-            reviewing = await VideoAnalyzer.stills(url: match.video, result: stroke, samples: match.samples)
+            reviewing = await VideoAnalyzer.stills(url: match.video, result: stroke, samples: match.samples, balls: match.balls, hand: hand)
             opening = nil
         }
     }
@@ -104,6 +106,40 @@ struct MatchView: View {
             Text(value)
                 .fontWeight(.semibold)
                 .foregroundStyle(good.map { $0 ? Color.green : Color.orange } ?? Color.primary)
+        }
+    }
+}
+
+/// Rallies and toss consistency from ball tracking, which is approximate.
+private struct BallSection: View {
+    let match: AnalyzedMatch
+    let hand: Handedness
+
+    var body: some View {
+        let rallies = match.rallies
+        let tosses = match.tosses(hand: hand)
+        Section {
+            if !rallies.isEmpty {
+                let average = Double(rallies.map(\.shots).reduce(0, +)) / Double(rallies.count)
+                Text(String(format: "%d rallies seen, about %.1f shots each, longest %d", rallies.count, average, rallies.map(\.shots).max() ?? 0))
+            }
+            if let c = BallAnalysis.consistency(tosses) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(c.verdict).fontWeight(.semibold)
+                    Text(String(format: "Over %d serves your toss peaked %.1f torso lengths above your head and %.1f in front of your shoulder, on average.",
+                                c.count, c.average.height, c.average.forward))
+                    Text(c.average.tip).font(.caption)
+                }
+            } else if let first = tosses.first {
+                Text(first.tip)
+            }
+            if rallies.isEmpty && tosses.isEmpty {
+                Text("The ball wasn't tracked clearly enough. It works best in good light, with the ball against a darker background.")
+            }
+        } header: {
+            Text("Ball tracking (approximate)")
+        } footer: {
+            Text("The ball blurs at speed, so fast shots are often missed and counts are estimates.")
         }
     }
 }

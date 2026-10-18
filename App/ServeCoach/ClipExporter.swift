@@ -119,6 +119,14 @@ enum ClipExporter {
             }
         }
 
+        if let ball = stroke.ball(at: frame.time) {
+            let c = CGPoint(x: rect.minX + ball.x * rect.width, y: rect.minY + ball.y * rect.height)
+            let ring = UIBezierPath(ovalIn: CGRect(x: c.x - 16, y: c.y - 16, width: 32, height: 32))
+            ring.lineWidth = 5
+            UIColor(red: 1, green: 0.92, blue: 0.23, alpha: 1).setStroke()
+            ring.stroke()
+        }
+
         let result = stroke.result
         let band = UIColor.black.withAlphaComponent(0.6)
         band.setFill()

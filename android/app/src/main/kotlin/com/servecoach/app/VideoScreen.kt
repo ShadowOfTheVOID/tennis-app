@@ -37,6 +37,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.servecoach.analysis.RgbImage
+import com.servecoach.analysis.BallTracker
+import com.servecoach.analysis.BallAnalysis
+import com.servecoach.analysis.BallSighting
 import com.servecoach.analysis.Frame
 import com.servecoach.analysis.Handedness
 import com.servecoach.analysis.MatchAnalyzer
@@ -63,19 +67,22 @@ object VideoAnalyzer {
     /** Analyse a clip of one stroke. Null if no stroke was found. */
     suspend fun analyzeStroke(context: Context, uri: Uri, hand: Handedness, type: StrokeType?, onProgress: (Float) -> Unit): ReviewedStroke? =
         withContext(Dispatchers.Default) {
-            val (frames, samples) = poses(context, uri, STROKE_FPS, STROKE_MAX_SECONDS, fast = false, onProgress)
-            val result = StrokeAnalyzer.analyzeClip(frames, type, hand) ?: return@withContext null
-            stills(context, uri, result, samples)
+            val scan = poses(context, uri, STROKE_FPS, STROKE_MAX_SECONDS, fast = false, onProgress)
+            val result = StrokeAnalyzer.analyzeClip(scan.frames, type, hand) ?: return@withContext null
+            stills(context, uri, result, scan.samples, scan.balls, hand)
         }
 
     suspend fun analyzeMatch(context: Context, uri: Uri, hand: Handedness, onProgress: (Float) -> Unit): AnalyzedMatch =
         withContext(Dispatchers.Default) {
-            val (frames, samples) = poses(context, uri, MATCH_FPS, MATCH_MAX_SECONDS, fast = true, onProgress)
-            AnalyzedMatch(MatchAnalyzer.analyze(frames, hand), uri, samples)
+            val scan = poses(context, uri, MATCH_FPS, MATCH_MAX_SECONDS, fast = true, onProgress)
+            AnalyzedMatch(MatchAnalyzer.analyze(scan.frames, hand), uri, scan.samples, scan.balls)
         }
 
     /** Pull the stills for one stroke's key moments from the video. */
-    suspend fun stills(context: Context, uri: Uri, result: StrokeResult, samples: Map<Double, PoseSample>): ReviewedStroke =
+    suspend fun stills(
+        context: Context, uri: Uri, result: StrokeResult, samples: Map<Double, PoseSample>,
+        balls: List<BallSighting>, hand: Handedness,
+    ): ReviewedStroke =
         withContext(Dispatchers.IO) {
             val retriever = MediaMetadataRetriever()
             try {
@@ -94,21 +101,47 @@ object VideoAnalyzer {
                     retriever.getScaledFrameAtTime((t * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST, 540, 540)
                         ?.let { ReplayFrame(t, it, samples[t]) }
                 }
-                ReviewedStroke(result, images, poseSamples, replay)
+                val toss = result.frame(Phase.TROPHY)?.let { samples[it.time] }?.let {
+                    BallAnalysis.toss(balls, result, hand, it.imageWidth.toDouble(), it.imageHeight.toDouble())
+                }
+                ReviewedStroke(result, images, poseSamples, replay, balls = balls.filter { it.time in (from - 1.2)..to }, toss = toss)
             } finally {
                 retriever.release()
             }
         }
 
-    /** Detect a pose in every sampled frame. Returns the frames and the pose samples by time. */
+    private class Scan(val frames: List<Frame>, val samples: Map<Double, PoseSample>, val balls: List<BallSighting>)
+
+    /** Width of the small frames the ball is looked for in. */
+    private const val BALL_WIDTH = 320
+    /** The ball is looked for at up to this rate, faster than poses, because it moves quickly. */
+    private const val BALL_FPS = 30
+
+    private fun rgb(bitmap: Bitmap, time: Double): RgbImage {
+        val h = max(1, bitmap.height * BALL_WIDTH / bitmap.width)
+        val small = Bitmap.createScaledBitmap(bitmap, BALL_WIDTH, h, true)
+        val pixels = IntArray(BALL_WIDTH * h)
+        small.getPixels(pixels, 0, BALL_WIDTH, 0, 0, BALL_WIDTH, h)
+        if (small !== bitmap) small.recycle()
+        val bytes = ByteArray(pixels.size * 3)
+        for (i in pixels.indices) {
+            val c = pixels[i]
+            bytes[3 * i] = (c shr 16).toByte(); bytes[3 * i + 1] = (c shr 8).toByte(); bytes[3 * i + 2] = c.toByte()
+        }
+        return RgbImage(BALL_WIDTH, h, bytes, time)
+    }
+
+    /** Detect a pose in every sampled frame, and track the ball. */
     private suspend fun poses(
         context: Context, uri: Uri, fps: Int, maxSeconds: Int, fast: Boolean, onProgress: (Float) -> Unit,
-    ): Pair<List<Frame>, Map<Double, PoseSample>> {
+    ): Scan {
         val retriever = MediaMetadataRetriever()
         val detector = BodyPoseDetector(stream = false, fast = fast)
         val frames = mutableListOf<Frame>()
         val samples = mutableMapOf<Double, PoseSample>()
+        val ball = BallTracker()
         fun add(time: Double, bitmap: Bitmap) {
+            ball.add(rgb(bitmap, time))
             val small = bitmap.scaledToMax(if (fast) 640 else 960)
             detector.detect(small)?.let {
                 frames += Frame(time, it.pose)
@@ -129,6 +162,7 @@ object VideoAnalyzer {
                 // Decode consecutive frames in batches: much faster than seeking to each one.
                 val videoFps = frameCount / (durationMs / 1000.0)
                 val step = max(1, (videoFps / fps).roundToInt())
+                val ballStep = max(1, (videoFps / BALL_FPS).roundToInt())
                 val last = min(frameCount, (seconds * videoFps).toInt())
                 var index = 0
                 while (index < last) {
@@ -136,7 +170,12 @@ object VideoAnalyzer {
                     val count = min(6, last - index)
                     val batch = runCatching { retriever.getFramesAtIndex(index, count) }.getOrNull() ?: break
                     batch.forEachIndexed { k, bitmap ->
-                        if ((index + k) % step == 0) add((index + k) / videoFps, bitmap) else bitmap.recycle()
+                        val i = index + k
+                        when {
+                            i % step == 0 -> add(i / videoFps, bitmap)
+                            i % ballStep == 0 -> { ball.add(rgb(bitmap, i / videoFps)); bitmap.recycle() }
+                            else -> bitmap.recycle()
+                        }
                     }
                     index += count
                     onProgress(index.toFloat() / last)
@@ -155,7 +194,7 @@ object VideoAnalyzer {
             detector.close()
             retriever.release()
         }
-        return frames to samples
+        return Scan(frames, samples, ball.sightings.toList())
     }
 }
 

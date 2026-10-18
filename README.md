@@ -22,6 +22,12 @@ It works on an **iPhone 11 Pro Max** and on most 64-bit Android phones.
     and how far you moved,
   - builds a **match plan** with the three changes that will help the most,
   - lets you tap any stroke to review it frame by frame.
+- **Ball tracking** (videos, approximate): the app looks for the moving optic-yellow ball in every
+  frame (up to 30 a second) and follows it. From that it shows:
+  - where your **toss** peaks for each serve (how high above your head, how far in front) with a tip,
+  - **toss consistency** over the serves in a match,
+  - **rallies** and roughly how many shots each, from the ball changing direction,
+  - the ball ringed in yellow on the replay and in shared clips.
 - **AI coach** ("How do I improve?"), for one stroke or a whole match:
   - double-checks the measurements and flags any it doesn't trust (anything measured from joints the
     tracker couldn't see clearly is always flagged),
@@ -80,7 +86,7 @@ from the camera.
 
 ### How strokes are found and told apart
 
-The app only sees your body, not the ball or racket:
+Strokes are found from your body alone (the ball is tracked separately and isn't needed):
 
 - **Finding swings:** a swing is a burst of hitting-hand speed relative to your hips, and contact is
   taken as the moment of peak speed.
@@ -143,7 +149,7 @@ usable coaching, so it isn't offered.
 
 The posture checks, stroke detection, match analysis, coaching prompts, JSON schema, answer parsing,
 rule-based coach and history are implemented twice, once per language, and kept in sync. Both have the
-same 46 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
+same 51 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
 matches were checked to be byte-for-byte identical on both platforms.
 
 ## Project layout
@@ -203,8 +209,10 @@ cd android && ./gradlew :analysis:test  # Kotlin module
 
 ## Limits
 
-- One camera angle only, and only your body is tracked. Racket face, ball speed, spin, toss placement
-  and where shots land aren't measured, so there are no winner or error counts.
+- One camera angle only. Racket face, ball speed and spin aren't measured.
+- Ball tracking is approximate. A fast ball blurs into a faint streak and is often missed, so it works
+  best for the toss and in good light with the ball against a darker background. A yellow-green shirt
+  or a moving yellow object can confuse it. It runs on videos, not in live mode.
 - In match mode, stroke types are detected from body position and can occasionally be wrong.
 - Footwork numbers are estimates: a split step is a small hop seen in your feet, and movement toward or
   away from the camera isn't seen.

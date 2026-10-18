@@ -70,7 +70,7 @@ object ClipExporter {
             val order = ShareClip.frames(source.map { it.time })
             val canvas = Canvas(canvasBitmap)
             order.forEachIndexed { n, i ->
-                draw(canvas, stroke, source[i])
+                draw(canvas, stroke, source[i], stroke.ballAt(source[i].time))
                 canvasBitmap.getPixels(pixels, 0, WIDTH, 0, 0, WIDTH, HEIGHT)
                 var input: Int
                 do { input = codec.dequeueInputBuffer(TIMEOUT_US); if (input < 0) drain(false) } while (input < 0)
@@ -108,7 +108,11 @@ object ClipExporter {
     }
     private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE }
 
-    private fun draw(canvas: Canvas, stroke: ReviewedStroke, frame: ReplayFrame) {
+    private val ballRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.rgb(255, 235, 59); style = Paint.Style.STROKE; strokeWidth = 5f
+    }
+
+    private fun draw(canvas: Canvas, stroke: ReviewedStroke, frame: ReplayFrame, ball: com.servecoach.analysis.BallSighting?) {
         canvas.drawColor(android.graphics.Color.BLACK)
         // Fit the frame into the 3:4 canvas.
         val image = frame.image
@@ -129,6 +133,8 @@ object ClipExporter {
             }
             for (j in Joint.entries) at(j)?.let { canvas.drawCircle(it.first, it.second, 7f, dot) }
         }
+
+        ball?.let { canvas.drawCircle((dx + it.x * image.width * scale).toFloat(), (dy + it.y * image.height * scale).toFloat(), 16f, ballRing) }
 
         val result = stroke.result
         canvas.drawRect(0f, 0f, WIDTH.toFloat(), 130f, band)

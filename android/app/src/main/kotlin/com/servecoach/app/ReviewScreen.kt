@@ -92,7 +92,8 @@ fun ReviewScreen(vm: AppViewModel, stroke: ReviewedStroke) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
-        if (stroke.replay.size >= 2) Replay(stroke.replay)
+        stroke.toss?.let { TossCard(it) }
+        if (stroke.replay.size >= 2) Replay(stroke)
         ShareClipButton(stroke)
 
         if (report != null) {
@@ -102,6 +103,19 @@ fun ReviewScreen(vm: AppViewModel, stroke: ReviewedStroke) {
         }
 
         stroke.result.evaluations.forEach { EvaluationCard(it, distrusted) }
+    }
+}
+
+/** Where the toss peaked, from ball tracking. */
+@Composable
+private fun TossCard(toss: com.servecoach.analysis.TossReading) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Toss (ball tracking, approximate)", style = MaterialTheme.typography.titleMedium)
+            Text("Peaked %.1f torso lengths above your head, %.1f %s your hitting shoulder."
+                .format(toss.height, kotlin.math.abs(toss.forward), if (toss.forward >= 0) "in front of" else "behind"))
+            Text(toss.tip, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+        }
     }
 }
 
@@ -280,7 +294,8 @@ private fun StatChip(label: String, value: String) {
 
 /** Frame-by-frame replay with the skeleton, scrubbed with a slider or played at quarter speed. */
 @Composable
-fun Replay(frames: List<ReplayFrame>) {
+fun Replay(stroke: ReviewedStroke) {
+    val frames = stroke.replay
     var index by remember(frames) { mutableIntStateOf(0) }
     var playing by remember(frames) { mutableStateOf(false) }
     LaunchedEffect(playing) {
@@ -296,7 +311,7 @@ fun Replay(frames: List<ReplayFrame>) {
             Text("Slow-motion replay", style = MaterialTheme.typography.titleMedium)
             Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
                 Image(frame.image.asImageBitmap(), "Replay frame", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-                SkeletonOverlay(frame.sample, Modifier.fillMaxSize(), fill = false)
+                SkeletonOverlay(frame.sample, Modifier.fillMaxSize(), fill = false, ball = stroke.ballAt(frame.time))
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 androidx.compose.material3.IconButton(onClick = { playing = !playing }) {

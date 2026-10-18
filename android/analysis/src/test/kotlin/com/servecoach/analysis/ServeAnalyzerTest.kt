@@ -22,13 +22,13 @@ private fun makePose(overrides: Map<Joint, Pair<Double, Double>> = emptyMap()): 
     return Pose((base + overrides).mapValues { (_, p) -> Point(p.first, p.second, 0.9) })
 }
 
-private val goodTrophy = makePose(mapOf(
+internal val goodTrophy = makePose(mapOf(
     Joint.LEFT_SHOULDER to (330.0 to 150.0), Joint.LEFT_ELBOW to (340.0 to 80.0), Joint.LEFT_WRIST to (350.0 to 10.0),
     Joint.RIGHT_SHOULDER to (270.0 to 175.0), Joint.RIGHT_ELBOW to (210.0 to 170.0), Joint.RIGHT_WRIST to (210.0 to 110.0),
     Joint.LEFT_KNEE to (340.0 to 370.0), Joint.RIGHT_KNEE to (300.0 to 370.0),
 ))
 
-private val goodContact = makePose(mapOf(
+internal val goodContact = makePose(mapOf(
     Joint.RIGHT_SHOULDER to (275.0 to 150.0), Joint.RIGHT_ELBOW to (285.0 to 55.0), Joint.RIGHT_WRIST to (295.0 to -40.0),
     Joint.LEFT_ELBOW to (340.0 to 190.0), Joint.LEFT_WRIST to (310.0 to 200.0),
 ))

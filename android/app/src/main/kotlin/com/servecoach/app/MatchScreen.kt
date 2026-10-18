@@ -88,6 +88,8 @@ fun MatchScreen(vm: AppViewModel, match: AnalyzedMatch, onReview: (ReviewedStrok
             }
         }
 
+        item { BallCard(match, vm.hand) }
+
         item {
             val coachReport = vm.reports[match.id]
             if (coachReport != null) {
@@ -103,7 +105,7 @@ fun MatchScreen(vm: AppViewModel, match: AnalyzedMatch, onReview: (ReviewedStrok
                 opening = stroke
                 scope.launch {
                     try {
-                        onReview(VideoAnalyzer.stills(context, match.video, stroke, match.samples))
+                        onReview(VideoAnalyzer.stills(context, match.video, stroke, match.samples, match.balls, vm.hand))
                     } finally {
                         opening = null
                     }
@@ -138,5 +140,35 @@ private fun Stat(label: String, value: String, good: Boolean?) {
                 null -> MaterialTheme.colorScheme.onSurface
             },
         )
+    }
+}
+
+/** Rallies and toss consistency from ball tracking, which is approximate. */
+@Composable
+private fun BallCard(match: AnalyzedMatch, hand: com.servecoach.analysis.Handedness) {
+    val rallies = match.rallies
+    val tosses = remember(match.id, hand) { match.tosses(hand) }
+    val consistency = com.servecoach.analysis.BallAnalysis.consistency(tosses)
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Ball tracking (approximate)", style = MaterialTheme.typography.titleMedium)
+            if (rallies.isNotEmpty()) {
+                val average = rallies.sumOf { it.shots }.toDouble() / rallies.size
+                Text("%d rallies seen, about %.1f shots each, longest %d".format(rallies.size, average, rallies.maxOf { it.shots }))
+            }
+            if (consistency != null) {
+                Text(consistency.verdict, fontWeight = FontWeight.SemiBold)
+                Text("Over %d serves your toss peaked %.1f torso lengths above your head and %.1f in front of your shoulder, on average."
+                    .format(consistency.count, consistency.average.height, consistency.average.forward), style = MaterialTheme.typography.bodyMedium)
+                Text(consistency.average.tip, style = MaterialTheme.typography.bodySmall)
+            } else if (tosses.isNotEmpty()) {
+                Text(tosses.first().tip, style = MaterialTheme.typography.bodyMedium)
+            }
+            if (rallies.isEmpty() && tosses.isEmpty()) {
+                Text("The ball wasn't tracked clearly enough. It works best in good light, with the ball against a darker background.")
+            }
+            Text("The ball blurs at speed, so fast shots are often missed and counts are estimates.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }

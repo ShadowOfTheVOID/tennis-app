@@ -120,7 +120,10 @@ internal val BONES = listOf(
  * center-crop ([fill]) or fit as the content beneath it.
  */
 @Composable
-fun SkeletonOverlay(sample: PoseSample?, modifier: Modifier = Modifier, fill: Boolean = true, mirrored: Boolean = false, color: Color = Color.Green) {
+fun SkeletonOverlay(
+    sample: PoseSample?, modifier: Modifier = Modifier, fill: Boolean = true, mirrored: Boolean = false, color: Color = Color.Green,
+    ball: com.servecoach.analysis.BallSighting? = null,
+) {
     Canvas(modifier) {
         if (sample == null || sample.imageWidth <= 0 || sample.imageHeight <= 0) return@Canvas
         val iw = sample.imageWidth.toFloat()
@@ -138,5 +141,10 @@ fun SkeletonOverlay(sample: PoseSample?, modifier: Modifier = Modifier, fill: Bo
             drawLine(color, pa, pb, strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
         }
         for (j in Joint.entries) map(j)?.let { drawCircle(Color.White, 5.dp.toPx(), it) }
+        ball?.let {
+            val x = if (mirrored) 1 - it.x else it.x
+            val c = Offset((x * iw).toFloat() * scale + ox, (it.y * ih).toFloat() * scale + oy)
+            drawCircle(Color(0xFFFFEB3B), 9.dp.toPx(), c, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx()))
+        }
     }
 }

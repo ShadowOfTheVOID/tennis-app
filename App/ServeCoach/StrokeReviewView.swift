@@ -9,6 +9,16 @@ struct ReviewedStroke: Identifiable {
     let samples: [Phase: PoseSample]
     /// Frames around the stroke for the slow-motion replay, oldest first.
     var replay: [ReplayFrame] = []
+    /// Ball sightings around the stroke (approximate; often missing when the ball blurs).
+    var balls: [BallSighting] = []
+    /// Where the toss peaked, for serves where the ball was tracked.
+    var toss: TossReading?
+
+    /// The ball seen at about `time`, if any.
+    func ball(at time: Double) -> BallSighting? {
+        guard let nearest = balls.min(by: { abs($0.time - time) < abs($1.time - time) }), abs(nearest.time - time) <= 0.05 else { return nil }
+        return nearest
+    }
 
     /// The time window the replay covers: from just before the first key moment to just after the last.
     static func replayWindow(_ result: StrokeResult) -> ClosedRange<Double>? {
@@ -61,7 +71,8 @@ struct StrokeReviewView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
-                if stroke.replay.count >= 2 { ReplayView(frames: stroke.replay) }
+                if let toss = stroke.toss { TossCard(toss: toss) }
+                if stroke.replay.count >= 2 { ReplayView(stroke: stroke) }
                 ShareClipButton(stroke: stroke)
 
                 if let report {
@@ -107,6 +118,23 @@ struct StrokeReviewView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
             Text(title).font(.caption.weight(.semibold))
         }
+    }
+}
+
+/// Where the toss peaked, from ball tracking.
+struct TossCard: View {
+    let toss: TossReading
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Toss (ball tracking, approximate)").font(.headline)
+            Text(String(format: "Peaked %.1f torso lengths above your head, %.1f %@ your hitting shoulder.",
+                        toss.height, abs(toss.forward), toss.forward >= 0 ? "in front of" : "behind"))
+            Text(toss.tip).font(.callout.weight(.medium))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -170,7 +198,8 @@ struct StrokeStats: View {
 
 /// Frame-by-frame replay with the skeleton, scrubbed with a slider or played at quarter speed.
 struct ReplayView: View {
-    let frames: [ReplayFrame]
+    let stroke: ReviewedStroke
+    private var frames: [ReplayFrame] { stroke.replay }
     @State private var index = 0
     @State private var playing = false
 
@@ -181,7 +210,7 @@ struct ReplayView: View {
             ZStack {
                 Color.black
                 Image(uiImage: frame.image).resizable().scaledToFit()
-                SkeletonOverlay(sample: frame.sample, fill: false)
+                SkeletonOverlay(sample: frame.sample, fill: false, ball: stroke.ball(at: frame.time))
             }
             .aspectRatio(3 / 4, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 12))

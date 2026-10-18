@@ -8,6 +8,8 @@ struct SkeletonOverlay: View {
     var fill = true
     var mirrored = false
     var color: Color = .green
+    /// A ball to ring, as fractions of the image.
+    var ball: BallSighting?
 
     private static let bones: [(Joint, Joint)] = [
         (.leftShoulder, .rightShoulder), (.leftHip, .rightHip),
@@ -44,6 +46,11 @@ struct SkeletonOverlay: View {
                 guard let p = sample.pose[joint] else { continue }
                 let c = map(p)
                 context.fill(Path(ellipseIn: CGRect(x: c.x - 5, y: c.y - 5, width: 10, height: 10)), with: .color(.white))
+            }
+            if let ball {
+                let c = map(Point(x: ball.x * img.width, y: ball.y * img.height))
+                context.stroke(Path(ellipseIn: CGRect(x: c.x - 9, y: c.y - 9, width: 18, height: 18)),
+                               with: .color(Color(red: 1, green: 0.92, blue: 0.23)), lineWidth: 3)
             }
         }
         .allowsHitTesting(false)

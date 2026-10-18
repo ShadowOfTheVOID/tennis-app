@@ -10,6 +10,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.servecoach.analysis.BallAnalysis
+import com.servecoach.analysis.Rally
+import com.servecoach.analysis.TossReading
+import com.servecoach.analysis.BallSighting
 import com.servecoach.analysis.CoachModel
 import com.servecoach.analysis.CoachReport
 import com.servecoach.analysis.Handedness
@@ -39,7 +43,14 @@ data class ReviewedStroke(
     val replay: List<ReplayFrame> = emptyList(),
     /** Also the id of its history record, so "compare with your best" can skip this stroke. */
     val id: String = UUID.randomUUID().toString(),
-)
+    /** Ball sightings around the stroke (approximate; often missing when the ball blurs). */
+    val balls: List<BallSighting> = emptyList(),
+    /** Where the toss peaked, for serves where the ball was tracked. */
+    val toss: TossReading? = null,
+) {
+    /** The ball seen at about [time], if any. */
+    fun ballAt(time: Double): BallSighting? = balls.minByOrNull { kotlin.math.abs(it.time - time) }?.takeIf { kotlin.math.abs(it.time - time) <= 0.05 }
+}
 
 /**
  * An analysed match video. Stills for each stroke are pulled from the video only when a
@@ -50,8 +61,19 @@ data class AnalyzedMatch(
     val video: Uri,
     /** Pose at every analysed frame, by time, for skeletons and replays. */
     val samples: Map<Double, PoseSample>,
+    /** Every ball sighting in the video (approximate). */
+    val balls: List<BallSighting> = emptyList(),
     val id: String = UUID.randomUUID().toString(),
-)
+) {
+    val rallies: List<Rally> by lazy { BallAnalysis.rallies(balls) }
+
+    /** Toss placement for each serve where the ball was tracked. */
+    fun tosses(hand: Handedness): List<TossReading> =
+        report.strokes.mapNotNull { s ->
+            val sample = s.frame(Phase.TROPHY)?.let { samples[it.time] } ?: return@mapNotNull null
+            BallAnalysis.toss(balls, s, hand, sample.imageWidth.toDouble(), sample.imageHeight.toDouble())
+        }
+}
 
 sealed interface DownloadState {
     data class Running(val progress: Float) : DownloadState

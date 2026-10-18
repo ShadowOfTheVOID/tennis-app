@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import PhotosUI
 import ServeAnalysis
 import SwiftUI
@@ -25,8 +26,20 @@ struct AnalyzedMatch: Identifiable {
     let id = UUID()
     let report: MatchReport
     let video: URL
-    /// Pose at each stroke's key moments, for drawing the skeleton.
+    /// Pose at every analysed frame, by time, for skeletons and replays.
     let samples: [Double: PoseSample]
+    /// Every ball sighting in the video (approximate).
+    var balls: [BallSighting] = []
+
+    var rallies: [Rally] { BallAnalysis.rallies(balls) }
+
+    /// Toss placement for each serve where the ball was tracked.
+    func tosses(hand: Handedness) -> [TossReading] {
+        report.strokes.compactMap { s in
+            guard let trophy = s.frame(for: .trophy), let sample = samples[trophy.time] else { return nil }
+            return BallAnalysis.toss(balls, serve: s, hand: hand, width: sample.imageSize.width, height: sample.imageSize.height)
+        }
+    }
 }
 
 extension AnalyzedMatch: Hashable {
@@ -44,20 +57,20 @@ enum VideoAnalyzer {
 
     /// Analyse a clip of one stroke. Nil if no stroke was found.
     static func analyzeStroke(url: URL, hand: Handedness, type: StrokeType?, progress: @escaping (Double) -> Void) async throws -> ReviewedStroke? {
-        let (frames, samples) = try await poses(url: url, fps: strokeFPS, maxSeconds: strokeMaxSeconds, progress: progress)
-        guard let result = StrokeAnalyzer.analyzeClip(frames, type: type, hand: hand) else { return nil }
-        return await stills(url: url, result: result, samples: samples)
+        let scan = try await poses(url: url, fps: strokeFPS, maxSeconds: strokeMaxSeconds, progress: progress)
+        guard let result = StrokeAnalyzer.analyzeClip(scan.frames, type: type, hand: hand) else { return nil }
+        return await stills(url: url, result: result, samples: scan.samples, balls: scan.balls, hand: hand)
     }
 
     static func analyzeMatch(url: URL, hand: Handedness, progress: @escaping (Double) -> Void) async throws -> AnalyzedMatch {
-        let (frames, samples) = try await poses(url: url, fps: matchFPS, maxSeconds: matchMaxSeconds, progress: progress)
-        let report = MatchAnalyzer.analyze(frames, hand: hand)
+        let scan = try await poses(url: url, fps: matchFPS, maxSeconds: matchMaxSeconds, progress: progress)
+        let report = MatchAnalyzer.analyze(scan.frames, hand: hand)
         // Every analysed frame's pose is kept, so each stroke's replay can show its skeleton.
-        return AnalyzedMatch(report: report, video: url, samples: samples)
+        return AnalyzedMatch(report: report, video: url, samples: scan.samples, balls: scan.balls)
     }
 
     /// Pull the stills for one stroke's key moments from the video.
-    static func stills(url: URL, result: StrokeResult, samples: [Double: PoseSample]) async -> ReviewedStroke {
+    static func stills(url: URL, result: StrokeResult, samples: [Double: PoseSample], balls: [BallSighting], hand: Handedness) async -> ReviewedStroke {
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 960, height: 960)
@@ -84,15 +97,20 @@ enum VideoAnalyzer {
                 }
             }
         }
-        return ReviewedStroke(result: result, images: images, samples: poseSamples, replay: replay)
+        var toss: TossReading?
+        if let trophy = result.frame(for: .trophy), let sample = samples[trophy.time] {
+            toss = BallAnalysis.toss(balls, serve: result, hand: hand, width: sample.imageSize.width, height: sample.imageSize.height)
+        }
+        let nearby = ReviewedStroke.replayWindow(result).map { w in balls.filter { (w.lowerBound - 1.2...w.upperBound).contains($0.time) } } ?? []
+        return ReviewedStroke(result: result, images: images, samples: poseSamples, replay: replay, balls: nearby, toss: toss)
     }
 
     /// Decode the video in order and detect a pose about `fps` times a second.
     /// Sequential decoding is far faster than seeking to each frame, which matters for long matches.
     private static func poses(url: URL, fps: Double, maxSeconds: Double, progress: @escaping (Double) -> Void) async throws
-        -> (frames: [Frame], samples: [Double: PoseSample]) {
+        -> (frames: [Frame], samples: [Double: PoseSample], balls: [BallSighting]) {
         let asset = AVURLAsset(url: url)
-        guard let track = try await asset.loadTracks(withMediaType: .video).first else { return ([], [:]) }
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { return ([], [:], []) }
         let duration = min(try await asset.load(.duration).seconds, maxSeconds)
         let orientation = orientation(of: try await track.load(.preferredTransform))
 
@@ -109,11 +127,20 @@ enum VideoAnalyzer {
         let detector = PoseDetector()
         var frames: [Frame] = []
         var samples: [Double: PoseSample] = [:]
+        let ball = BallTracker()
+        let ciContext = CIContext(options: [.useSoftwareRenderer: false])
         var next = 0.0
+        var nextBall = 0.0
         while let buffer = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
             let time = CMSampleBufferGetPresentationTimeStamp(buffer).seconds
-            guard time >= next, let pixels = CMSampleBufferGetImageBuffer(buffer) else { continue }
+            guard let pixels = CMSampleBufferGetImageBuffer(buffer) else { continue }
+            // The ball moves fast, so it's looked for more often than poses (up to 30 times a second).
+            if time >= nextBall {
+                nextBall = time + 1 / ballFPS - 0.005
+                if let image = rgb(pixels, orientation: orientation, time: time, context: ciContext) { ball.add(image) }
+            }
+            guard time >= next else { continue }
             next = time + 1 / fps - 0.005
             if let sample = detector.detect(pixelBuffer: pixels, orientation: orientation) {
                 frames.append(Frame(time: time, pose: sample.pose))
@@ -121,7 +148,37 @@ enum VideoAnalyzer {
             }
             progress(duration > 0 ? min(1, time / duration) : 1)
         }
-        return (frames, samples)
+        return (frames, samples, ball.sightings)
+    }
+
+    private static let ballFPS = 30.0
+    /// Width of the small upright frames the ball is looked for in.
+    private static let ballWidth = 320
+
+    private static func rgb(_ pixels: CVPixelBuffer, orientation: CGImagePropertyOrientation, time: Double, context: CIContext) -> RGBImage? {
+        let image = CIImage(cvPixelBuffer: pixels).oriented(orientation)
+        guard image.extent.width > 0 else { return nil }
+        let scale = Double(ballWidth) / image.extent.width
+        let small = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let width = ballWidth
+        let height = max(1, Int((image.extent.height * scale).rounded(.down)))
+        // Through a CGImage so the rows come out top first, the same way up as the pose coordinates.
+        guard let cg = context.createCGImage(small, from: CGRect(x: small.extent.minX, y: small.extent.minY,
+                                                                 width: CGFloat(width), height: CGFloat(height))) else { return nil }
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = rgba.withUnsafeMutableBytes { raw -> Bool in
+            guard let bitmap = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                         space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+            else { return false }
+            bitmap.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        var rgb = [UInt8](repeating: 0, count: width * height * 3)
+        for i in 0..<(width * height) {
+            rgb[3 * i] = rgba[4 * i]; rgb[3 * i + 1] = rgba[4 * i + 1]; rgb[3 * i + 2] = rgba[4 * i + 2]
+        }
+        return RGBImage(width: width, height: height, rgb: rgb, time: time)
     }
 
     /// How the video's frames are rotated relative to upright, from its track transform.
