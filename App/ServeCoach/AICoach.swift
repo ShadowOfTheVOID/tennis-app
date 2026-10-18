@@ -6,7 +6,7 @@ import UIKit
 import FoundationModels
 #endif
 
-/// Turns a serve into coaching, using the best engine this phone has:
+/// Turns a stroke or a match into coaching, using the best engine this phone has:
 /// 1. Gemma 4 through LiteRT-LM, once downloaded (any iPhone with 4 GB+ RAM, e.g. iPhone 11 Pro Max).
 ///    It also looks at the trophy and contact photos.
 /// 2. Apple Intelligence (Foundation Models), on iOS 26 devices that support it.
@@ -33,23 +33,47 @@ final class AICoach {
         return .rules
     }
 
-    /// Always returns a report: if an AI engine fails or answers badly, the rule-based coach is used.
-    func review(_ serve: ReviewedServe, hand: Handedness) async -> CoachReport {
-        let rules = Coach.ruleBased(serve.result)
+    /// Coach one stroke. Always returns a report: if an AI engine fails or answers badly, the rules are used.
+    func review(_ stroke: ReviewedStroke, hand: Handedness) async -> CoachReport {
+        let result = stroke.result
+        let rules = Coach.ruleBased(result, hand: hand)
+        let prompt = { (images: Bool) in Coach.prompt(result, hand: hand, hasImages: images) }
+        let parse = { (text: String, model: String) in Coach.parse(text, result: result, hand: hand, modelName: model) }
         switch engine {
         case .downloaded(let model):
-            let images = model.vision ? [serve.trophyImage, serve.contactImage].compactMap { $0 } : []
-            return (try? await liteRT.review(serve.result, images: images, hand: hand, model: model, path: models.url(for: model))) ?? rules
+            let images = model.vision ? result.keyFrames.compactMap { stroke.images[$0.phase] } : []
+            return (try? await liteRT.ask(system: Coach.instructions, prompt: prompt(!images.isEmpty), images: images,
+                                          model: model, path: models.url(for: model))).flatMap { parse($0, model.name) } ?? rules
         case .appleIntelligence:
-            #if canImport(FoundationModels)
-            if #available(iOS 26.0, *) {
-                return (try? await AppleIntelligenceCoach.review(serve.result, hand: hand)) ?? rules
-            }
-            #endif
-            return rules
+            return await appleIntelligence(system: Coach.instructions, prompt: prompt(false)).flatMap { parse($0, "Apple Intelligence") } ?? rules
         case .rules:
             return rules
         }
+    }
+
+    /// Coach a whole match from its stroke summaries and footwork. Always returns a report.
+    func review(_ match: MatchReport, hand: Handedness) async -> CoachReport {
+        let rules = Coach.ruleBased(match)
+        let prompt = Coach.matchPrompt(match, hand: hand)
+        switch engine {
+        case .downloaded(let model):
+            return (try? await liteRT.ask(system: Coach.matchInstructions, prompt: prompt, images: [], model: model, path: models.url(for: model)))
+                .flatMap { Coach.parse($0, match: match, modelName: model.name) } ?? rules
+        case .appleIntelligence:
+            return await appleIntelligence(system: Coach.matchInstructions, prompt: prompt)
+                .flatMap { Coach.parse($0, match: match, modelName: "Apple Intelligence") } ?? rules
+        case .rules:
+            return rules
+        }
+    }
+
+    private func appleIntelligence(system: String, prompt: String) async -> String? {
+        #if canImport(FoundationModels)
+        if #available(iOS 26.0, *) {
+            return try? await AppleIntelligenceCoach.reply(system: system, prompt: prompt)
+        }
+        #endif
+        return nil
     }
 
     func release() async {
@@ -62,24 +86,21 @@ private actor LiteRTCoach {
     private var engine: LiteRTLM.Engine?
     private var engineModel: CoachModel?
 
-    func review(_ result: ServeResult, images: [UIImage], hand: Handedness, model: CoachModel, path: URL) async throws -> CoachReport? {
+    /// The model's raw reply: constrained JSON first, a plain request if the runtime rejects that.
+    func ask(system: String, prompt: String, images: [UIImage], model: CoachModel, path: URL) async throws -> String {
         let engine = try await engine(for: model, path: path)
         let files = try images.enumerated().map { index, image in try Self.saveJPEG(image, name: "frame\(index).jpg") }
-        let contents = files.map { LiteRTLM.Content.imageFile($0.path) }
-            + [LiteRTLM.Content.text(Coach.prompt(result, hand: hand, hasImages: !files.isEmpty))]
-
-        let reply: String
+        let contents = files.map { LiteRTLM.Content.imageFile($0.path) } + [LiteRTLM.Content.text(prompt)]
         do {
-            reply = try await ask(engine, contents, constrained: true)
+            return try await ask(engine, system: system, contents, constrained: true)
         } catch {
-            reply = try await ask(engine, contents, constrained: false)
+            return try await ask(engine, system: system, contents, constrained: false)
         }
-        return Coach.parse(reply, result: result, modelName: model.name)
     }
 
-    private func ask(_ engine: LiteRTLM.Engine, _ contents: [LiteRTLM.Content], constrained: Bool) async throws -> String {
+    private func ask(_ engine: LiteRTLM.Engine, system: String, _ contents: [LiteRTLM.Content], constrained: Bool) async throws -> String {
         let config = LiteRTLM.ConversationConfig(
-            systemMessage: LiteRTLM.Message(Coach.instructions),
+            systemMessage: LiteRTLM.Message(system),
             samplerConfig: try LiteRTLM.SamplerConfig(topK: 40, topP: 0.95, temperature: 0.4),
             enableResponseFormat: constrained
         )
@@ -154,7 +175,7 @@ extension AppleIntelligenceCoach {
     struct Report {
         @Guide(description: "Two or three sentences summarising the serve posture.")
         var summary: String
-        @Guide(description: "One entry per measured check, using the id in square brackets.")
+        @Guide(description: "Only checks whose measurement looks untrustworthy, using the id in square brackets. Can be empty.")
         var measurementReview: [Review]
         @Guide(description: "Things the player already does well.")
         var strengths: [String]
@@ -185,10 +206,10 @@ extension AppleIntelligenceCoach {
         var drill: String
     }
 
-    static func review(_ result: ServeResult, hand: Handedness) async throws -> CoachReport? {
-        let session = LanguageModelSession(instructions: Coach.instructions)
-        let report = try await session.respond(to: Coach.prompt(result, hand: hand, hasImages: false), generating: Report.self).content
-        // Round-trip through the shared parser so both AI engines get the same clean-up and fallbacks.
+    /// The model's reply as JSON text, so both AI engines go through the same shared parser and fallbacks.
+    static func reply(system: String, prompt: String) async throws -> String {
+        let session = LanguageModelSession(instructions: system)
+        let report = try await session.respond(to: prompt, generating: Report.self).content
         let json: [String: Any] = [
             "summary": report.summary,
             "measurement_review": report.measurementReview.map { ["check_id": $0.checkId, "trustworthy": $0.trustworthy, "note": $0.note] },
@@ -196,8 +217,7 @@ extension AppleIntelligenceCoach {
             "improvements": report.improvements.map { ["title": $0.title, "why": $0.why, "how": $0.how, "drill": $0.drill] },
             "next_session_focus": report.nextSessionFocus,
         ]
-        let text = String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self)
-        return Coach.parse(text, result: result, modelName: "Apple Intelligence")
+        return String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self)
     }
 }
 #endif

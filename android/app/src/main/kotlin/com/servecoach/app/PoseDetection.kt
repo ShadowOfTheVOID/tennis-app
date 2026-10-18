@@ -7,6 +7,7 @@ import com.google.mlkit.vision.pose.PoseDetection
 import com.google.mlkit.vision.pose.PoseDetector
 import com.google.mlkit.vision.pose.PoseLandmark
 import com.google.mlkit.vision.pose.accurate.AccuratePoseDetectorOptions
+import com.google.mlkit.vision.pose.defaults.PoseDetectorOptions
 import com.servecoach.analysis.Joint
 import com.servecoach.analysis.Point
 import com.servecoach.analysis.Pose
@@ -24,12 +25,21 @@ private val LANDMARKS = mapOf(
     Joint.LEFT_ANKLE to PoseLandmark.LEFT_ANKLE, Joint.RIGHT_ANKLE to PoseLandmark.RIGHT_ANKLE,
 )
 
-/** Google ML Kit's on-device pose detector, converted to `analysis.Pose` (pixel coordinates, y down). */
-class BodyPoseDetector(stream: Boolean) : AutoCloseable {
+/**
+ * Google ML Kit's on-device pose detector, converted to `analysis.Pose` (pixel coordinates, y down).
+ * [fast] uses the lighter model, for long match videos.
+ */
+class BodyPoseDetector(stream: Boolean, fast: Boolean = false) : AutoCloseable {
     private val detector: PoseDetector = PoseDetection.getClient(
-        AccuratePoseDetectorOptions.Builder()
-            .setDetectorMode(if (stream) AccuratePoseDetectorOptions.STREAM_MODE else AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE)
-            .build()
+        if (fast) {
+            PoseDetectorOptions.Builder()
+                .setDetectorMode(if (stream) PoseDetectorOptions.STREAM_MODE else PoseDetectorOptions.SINGLE_IMAGE_MODE)
+                .build()
+        } else {
+            AccuratePoseDetectorOptions.Builder()
+                .setDetectorMode(if (stream) AccuratePoseDetectorOptions.STREAM_MODE else AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE)
+                .build()
+        }
     )
 
     /** Blocking; call off the main thread. [width]/[height] are of the upright image. */

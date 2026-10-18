@@ -24,9 +24,14 @@ final class PoseDetector {
         .leftAnkle: .leftAnkle, .rightAnkle: .rightAnkle,
     ]
 
-    func detect(pixelBuffer: CVPixelBuffer) -> PoseSample? {
-        let size = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
-        return perform(VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up), size: size)
+    /// `orientation` says how the buffer is rotated (videos often store portrait frames sideways);
+    /// coordinates come back in the upright image.
+    func detect(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation = .up) -> PoseSample? {
+        let w = CVPixelBufferGetWidth(pixelBuffer)
+        let h = CVPixelBufferGetHeight(pixelBuffer)
+        let sideways = [.left, .right, .leftMirrored, .rightMirrored].contains(orientation)
+        let size = sideways ? CGSize(width: h, height: w) : CGSize(width: w, height: h)
+        return perform(VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation), size: size)
     }
 
     func detect(cgImage: CGImage) -> PoseSample? {

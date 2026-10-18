@@ -3,9 +3,11 @@ package com.servecoach.analysis
 import kotlin.math.roundToInt
 
 enum class Phase(val title: String) {
-    READY("Ready"),
+    READY("Ready position"),
     TROPHY("Trophy position"),
+    PREPARATION("Preparation"),
     CONTACT("Contact"),
+    FINISH("Finish"),
 }
 
 enum class Status(internal val points: Double?) {
@@ -54,7 +56,7 @@ object ServeAnalyzer {
     fun evaluate(pose: Pose, hand: Handedness): Evaluation? = when (phase(pose, hand)) {
         Phase.TROPHY -> trophy(pose, hand)
         Phase.CONTACT -> contact(pose, hand)
-        Phase.READY -> null
+        Phase.READY, Phase.PREPARATION, Phase.FINISH -> null
     }
 
     // Trophy position
@@ -226,12 +228,12 @@ object ServeAnalyzer {
         return Check(id, label, status, value, tip)
     }
 
-    private fun band(v: Double, good: ClosedFloatingPointRange<Double>, warn: ClosedFloatingPointRange<Double>) =
+    internal fun band(v: Double, good: ClosedFloatingPointRange<Double>, warn: ClosedFloatingPointRange<Double>) =
         if (v in good) Status.GOOD else if (v in warn) Status.WARN else Status.BAD
 
-    private fun deg(v: Double) = "${v.roundToInt()}°"
-    private fun torso(v: Double) = "%.2f× torso".format(java.util.Locale.US, v)
+    internal fun deg(v: Double) = "${v.roundToInt()}°"
+    internal fun torso(v: Double) = "%.2f× torso".format(java.util.Locale.US, v)
 
-    private fun unknown(id: String, label: String) = Check(id, label, Status.UNKNOWN, "—",
+    internal fun unknown(id: String, label: String) = Check(id, label, Status.UNKNOWN, "—",
         "Not enough of your body is visible. Step back so your whole body is in frame.")
 }

@@ -1,42 +1,53 @@
 import ServeAnalysis
 import SwiftUI
 
-/// A completed serve's key frames, kept together for review and AI coaching.
-struct ReviewedServe: Identifiable {
+/// A completed stroke with stills of its key moments, kept together for review and AI coaching.
+struct ReviewedStroke: Identifiable {
     let id = UUID()
-    let result: ServeResult
-    let trophyImage: UIImage?
-    let contactImage: UIImage?
-    let trophySample: PoseSample?
-    let contactSample: PoseSample?
+    let result: StrokeResult
+    let images: [Phase: UIImage]
+    let samples: [Phase: PoseSample]
 }
 
-/// Shows a serve's key frames and on-device checks, and asks the AI coach how to improve.
-struct ServeReviewView: View {
-    let serve: ReviewedServe
+extension ReviewedStroke: Hashable {
+    static func == (a: Self, b: Self) -> Bool { a.id == b.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+/// Shows a stroke's key frames and on-device checks, and asks the AI coach how to improve.
+struct StrokeReviewView: View {
+    let stroke: ReviewedStroke
     let hand: Handedness
 
     @Environment(AppState.self) private var app
 
-    private var report: CoachReport? { app.reports[serve.id] }
-    private var loading: Bool { app.coaching.contains(serve.id) }
+    private var report: CoachReport? { app.reports[stroke.id] }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
                 HStack(spacing: 8) {
-                    keyFrame("Trophy", image: serve.trophyImage, sample: serve.trophySample)
-                    keyFrame("Contact", image: serve.contactImage, sample: serve.contactSample)
+                    ForEach(stroke.result.keyFrames, id: \.phase) { key in
+                        keyFrame(key.phase.title, image: stroke.images[key.phase], sample: stroke.samples[key.phase])
+                    }
                 }
 
-                aiSection
+                if let report {
+                    CoachReportView(report: report, score: stroke.result.score, labels: labels)
+                } else {
+                    CoachButton(id: stroke.id, photos: true) { app.requestCoaching(stroke, hand: hand) }
+                }
 
                 let distrusted = report?.distrustedChecks ?? []
-                if let trophy = serve.result.trophy { EvaluationCard(evaluation: trophy, distrusted: distrusted) }
-                if let contact = serve.result.contact { EvaluationCard(evaluation: contact, distrusted: distrusted) }
+                ForEach(stroke.result.evaluations, id: \.phase) { EvaluationCard(evaluation: $0, distrusted: distrusted) }
             }
             .padding()
         }
+        .navigationTitle(stroke.result.title)
+    }
+
+    private var labels: [String: String] {
+        Dictionary(stroke.result.checks.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
     }
 
     @ViewBuilder
@@ -56,43 +67,47 @@ struct ServeReviewView: View {
             Text(title).font(.caption.weight(.semibold))
         }
     }
+}
 
-    @ViewBuilder
-    private var aiSection: some View {
-        if let report {
-            CoachReportView(report: report, serve: serve.result)
-        } else {
-            VStack(spacing: 8) {
-                Button {
-                    app.requestCoaching(serve, hand: hand)
-                } label: {
-                    Label(loading ? "Coach is reviewing your serve…" : "How do I improve?", systemImage: "sparkles")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(loading)
-                if loading {
-                    ProgressView()
-                    if case .downloaded = app.coachEngine {
-                        Text("This takes 1–2 minutes on most phones.").font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-                Text(engineDescription)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+/// "How do I improve?" with progress and a note on which coach will answer.
+struct CoachButton: View {
+    let id: UUID
+    /// Whether this review comes with photos the AI could look at.
+    let photos: Bool
+    let action: () -> Void
+
+    @Environment(AppState.self) private var app
+
+    var body: some View {
+        let loading = app.coaching.contains(id)
+        VStack(spacing: 8) {
+            Button(action: action) {
+                Label(loading ? "Coach is reviewing…" : "How do I improve?", systemImage: "sparkles")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent)
+            .disabled(loading)
+            if loading {
+                ProgressView()
+                if case .downloaded = app.coachEngine {
+                    Text("This takes 1–2 minutes on most phones.").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            Text(engineDescription)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
     }
 
     private var engineDescription: String {
         switch app.coachEngine {
-        case .downloaded(let model) where model.vision:
+        case .downloaded(let model) where model.vision && photos:
             "\(model.name) runs on your phone and checks the measurements against your photos. Nothing is uploaded."
         case .downloaded(let model):
-            "\(model.name) runs on your phone and double-checks the measurements. Nothing is uploaded."
+            "\(model.name) runs on your phone and double-checks the analysis. Nothing is uploaded."
         case .appleIntelligence:
-            "Apple Intelligence double-checks the measurements on your phone. Download Gemma 4 in Settings to also check your photos."
+            "Apple Intelligence double-checks the analysis on your phone. Download Gemma 4 in Settings to also check your photos."
         case .rules:
             "Using the built-in coach. Download the free AI model in Settings for personalised, offline AI coaching."
         }
@@ -101,11 +116,9 @@ struct ServeReviewView: View {
 
 struct CoachReportView: View {
     let report: CoachReport
-    let serve: ServeResult
-
-    private var labels: [String: String] {
-        Dictionary(serve.checks.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
-    }
+    let score: Int?
+    /// Check ids to labels, for the measurement review.
+    let labels: [String: String]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -116,7 +129,7 @@ struct CoachReportView: View {
                     if let name = report.modelName { Text(name).font(.caption).foregroundStyle(.secondary) }
                 }
                 Spacer()
-                ScoreBadge(score: serve.score)
+                ScoreBadge(score: score)
             }
             Text(report.summary)
 

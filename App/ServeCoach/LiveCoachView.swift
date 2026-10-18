@@ -30,10 +30,14 @@ struct CameraPreview: UIViewRepresentable {
 struct LiveCoachView: View {
     @AppStorage("handedness") private var hand: Handedness = .right
     @AppStorage("spokenCues") private var spokenCues = true
+    /// A `StrokeType` raw value, or "any" to work it out from each swing.
+    @AppStorage("practiceStroke") private var practiceStroke = StrokeType.serve.rawValue
     @Environment(AppState.self) private var app
     @State private var camera = CameraModel()
     @State private var showLiveChecks = false
-    @State private var reviewing: ReviewedServe?
+    @State private var reviewing: ReviewedStroke?
+
+    private var stroke: StrokeType? { StrokeType(rawValue: practiceStroke) }
 
     var body: some View {
         ZStack {
@@ -56,17 +60,17 @@ struct LiveCoachView: View {
                 .padding()
             }
         }
-        .onAppear { camera.start(hand: hand) }
+        .onAppear { camera.start(hand: hand, stroke: stroke) }
         .onDisappear { camera.stop() }
-        .onChange(of: hand) { _, newHand in camera.setHand(newHand) }
+        .onChange(of: hand) { _, newHand in camera.setTracking(hand: newHand, stroke: stroke) }
+        .onChange(of: practiceStroke) { camera.setTracking(hand: hand, stroke: stroke) }
         .onChange(of: spokenCues, initial: true) { _, on in camera.spokenCues = on }
-        .onChange(of: camera.serveCount) {
-            if let serve = camera.lastServe { app.record(serve, hand: hand) }
+        .onChange(of: camera.strokeCount) {
+            if let stroke = camera.lastStroke { app.record(stroke, hand: hand) }
         }
-        .sheet(item: $reviewing) { serve in
+        .sheet(item: $reviewing) { stroke in
             NavigationStack {
-                ServeReviewView(serve: serve, hand: hand)
-                    .navigationTitle("Serve review")
+                StrokeReviewView(stroke: stroke, hand: hand)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar { Button("Done") { reviewing = nil } }
             }
@@ -74,6 +78,7 @@ struct LiveCoachView: View {
     }
 
     private var phaseColor: Color {
+        guard stroke == .serve else { return .green }
         switch camera.sample.map({ ServeAnalyzer.phase(of: $0.pose, hand: hand) }) {
         case .trophy: .yellow
         case .contact: .cyan
@@ -82,7 +87,8 @@ struct LiveCoachView: View {
     }
 
     private var header: some View {
-        HStack {
+        VStack(spacing: 8) {
+            HStack {
             Picker("Hand", selection: $hand) {
                 Text("Righty").tag(Handedness.right)
                 Text("Lefty").tag(Handedness.left)
@@ -101,6 +107,8 @@ struct LiveCoachView: View {
                 Image(systemName: "arrow.triangle.2.circlepath.camera")
             }
             .buttonStyle(.bordered)
+            }
+            StrokePicker(selection: $practiceStroke)
         }
         .padding(8)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -109,8 +117,8 @@ struct LiveCoachView: View {
     @ViewBuilder
     private var feedback: some View {
         Picker("Mode", selection: $showLiveChecks) {
-            Text("Last serve").tag(false)
-            Text("Hold pose").tag(true)
+            Text("Last stroke").tag(false)
+            Text(stroke == .serve ? "Hold pose" : "Ready position").tag(true)
         }
         .pickerStyle(.segmented)
 
@@ -119,27 +127,27 @@ struct LiveCoachView: View {
                 if let live = camera.liveEvaluation {
                     EvaluationCard(evaluation: live)
                 } else {
-                    hint("Raise your tossing arm into the trophy position and hold it.")
+                    hint(stroke == .serve ? "Raise your tossing arm into the trophy position and hold it."
+                         : "Get into your ready position: knees bent, feet wide, racket up in front.")
                 }
-            } else if let serve = camera.lastServe {
+            } else if let last = camera.lastStroke {
                 VStack(spacing: 12) {
                     HStack {
-                        Text("Serve #\(camera.serveCount)").font(.headline)
+                        Text("\(last.result.title) #\(camera.strokeCount)").font(.headline)
                         Spacer()
                         Button {
-                            reviewing = serve
+                            reviewing = last
                         } label: {
                             Label("AI coach", systemImage: "sparkles")
                         }
                         .buttonStyle(.borderedProminent)
-                        ScoreBadge(score: serve.result.score)
+                        ScoreBadge(score: last.result.score)
                     }
                     .padding(.horizontal)
-                    if let trophy = serve.result.trophy { EvaluationCard(evaluation: trophy) }
-                    if let contact = serve.result.contact { EvaluationCard(evaluation: contact) }
+                    ForEach(last.result.evaluations, id: \.phase) { EvaluationCard(evaluation: $0) }
                 }
             } else {
-                hint("Set the phone up side-on, about 4 m away, with your whole body in frame. Then serve!")
+                hint("Set the phone up side-on, about 4 m away, with your whole body in frame. Then hit!")
             }
         }
         .frame(maxHeight: 340)
@@ -152,5 +160,26 @@ struct LiveCoachView: View {
             .padding()
             .frame(maxWidth: .infinity)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+/// Serve, Forehand, ... or Any (worked out from each swing). Bound to a `StrokeType` raw value or "any".
+struct StrokePicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                chip("Any", value: "any")
+                ForEach(StrokeType.allCases, id: \.self) { chip($0.title, value: $0.rawValue) }
+            }
+        }
+    }
+
+    private func chip(_ title: String, value: String) -> some View {
+        Button(title) { selection = value }
+            .buttonStyle(.bordered)
+            .tint(selection == value ? .accentColor : .secondary)
+            .font(.subheadline.weight(selection == value ? .semibold : .regular))
     }
 }

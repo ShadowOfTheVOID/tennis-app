@@ -4,26 +4,33 @@ import SwiftUI
 struct HistoryView: View {
     @Environment(AppState.self) private var app
     @State private var confirmClear = false
+    /// A record kind to show, or nil for everything.
+    @State private var filter: String?
+
+    private var records: [PracticeRecord] { app.history.filter { filter == nil || $0.kind == filter } }
 
     var body: some View {
         NavigationStack {
             Group {
                 if app.history.isEmpty {
                     ContentUnavailableView(
-                        "No serves yet",
+                        "Nothing yet",
                         systemImage: "chart.line.uptrend.xyaxis",
-                        description: Text("Serves you record live or analyze from video show up here so you can track progress.")
+                        description: Text("Strokes you record live and videos you analyze show up here so you can track progress.")
                     )
                 } else {
                     List {
-                        Section { summary }
-                        Section("Serves") {
-                            ForEach(app.history) { record in
+                        Section {
+                            filters
+                            summary
+                        }
+                        Section("Sessions") {
+                            ForEach(records) { record in
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(record.date, format: .dateTime.day().month().hour().minute()).font(.subheadline.weight(.semibold))
-                                        Text("Trophy \(record.trophyScore.map(String.init) ?? "—") · Contact \(record.contactScore.map(String.init) ?? "—")")
-                                            .font(.caption).foregroundStyle(.secondary)
+                                        Text(record.title).font(.subheadline.weight(.semibold))
+                                        Text(record.date, format: .dateTime.day().month().hour().minute()).font(.caption)
+                                        Text(record.detail).font(.caption).foregroundStyle(.secondary)
                                         if let fix = record.topFix { Text("Fix: \(fix)").font(.caption) }
                                     }
                                     Spacer()
@@ -41,30 +48,54 @@ struct HistoryView: View {
             .confirmationDialog("Clear all history?", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("Clear", role: .destructive) { app.clearHistory() }
             } message: {
-                Text("This deletes every saved serve from this iPhone.")
+                Text("This deletes every saved stroke and match from this iPhone.")
             }
         }
     }
 
+    private var filters: some View {
+        let kinds = app.history.reduce(into: [String]()) { if !$0.contains($1.kind) { $0.append($1.kind) } }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                chip("All", kind: nil)
+                ForEach(kinds, id: \.self) { kind in chip(app.history.first { $0.kind == kind }?.title ?? kind, kind: kind) }
+            }
+        }
+    }
+
+    private func chip(_ title: String, kind: String?) -> some View {
+        Button(title) { filter = kind }
+            .buttonStyle(.bordered)
+            .tint(filter == kind ? .accentColor : .secondary)
+    }
+
     @ViewBuilder
     private var summary: some View {
-        let scores = app.history.compactMap(\.score)
+        let scores = records.compactMap(\.score)
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(app.history.count) serves").font(.headline)
+            Text("\(records.count) \(noun)").font(.headline)
             if !scores.isEmpty {
                 let recent = scores.prefix(10)
                 Text("Average score: \(recent.reduce(0, +) / recent.count) (last \(recent.count))")
             }
-            if let trend = HistoryStats.trend(app.history) {
-                Text(trend > 0 ? "Trending up: +\(trend) points over your last 5 serves"
-                     : trend < 0 ? "Trending down: \(trend) points over your last 5 serves"
-                     : "Holding steady over your last 5 serves")
+            // A trend only means something within one kind of stroke.
+            if filter != nil, let trend = HistoryStats.trend(records) {
+                Text(trend > 0 ? "Trending up: +\(trend) points over your last 5"
+                     : trend < 0 ? "Trending down: \(trend) points over your last 5"
+                     : "Holding steady over your last 5")
                     .foregroundStyle(trend >= 0 ? .green : .orange)
             }
-            if let fix = HistoryStats.mostCommonFix(app.history) {
+            if let fix = HistoryStats.mostCommonFix(records) {
                 Text("Most common fix: \(fix)").fontWeight(.medium)
             }
         }
+    }
+}
+
+extension HistoryView {
+    private var noun: String {
+        guard let filter, let title = app.history.first(where: { $0.kind == filter })?.title.lowercased() else { return "sessions" }
+        return filter == PracticeRecord.matchKind ? "matches" : title + "s"
     }
 }
 
@@ -81,7 +112,7 @@ struct SettingsView: View {
                         Text("Right-handed").tag(Handedness.right)
                         Text("Left-handed").tag(Handedness.left)
                     }
-                    Toggle("Spoken tips after each serve", isOn: $spokenCues)
+                    Toggle("Spoken tips after each stroke", isOn: $spokenCues)
                 }
 
                 Section {

@@ -64,22 +64,30 @@ import com.servecoach.analysis.Frame
 import com.servecoach.analysis.Handedness
 import com.servecoach.analysis.Phase
 import com.servecoach.analysis.ServeAnalyzer
-import com.servecoach.analysis.ServeResult
 import com.servecoach.analysis.ServeTracker
+import com.servecoach.analysis.StrokeAnalyzer
+import com.servecoach.analysis.StrokeResult
+import com.servecoach.analysis.StrokeTracker
+import com.servecoach.analysis.StrokeType
+import com.servecoach.analysis.stroke
+import androidx.compose.foundation.lazy.items
 import java.util.Locale
 import java.util.concurrent.Executors
 
 /**
- * Runs pose detection on camera frames, tracks serves, and keeps a few seconds of
- * downscaled stills so a finished serve can be reviewed. Runs on the analysis thread.
+ * Runs pose detection on camera frames, tracks strokes, and keeps a few seconds of
+ * downscaled stills so a finished stroke can be reviewed. Runs on the analysis thread.
  */
 private class LiveAnalyzer(
     @Volatile var hand: Handedness,
+    /** The stroke being practised; null means work it out from each swing. */
+    @Volatile var stroke: StrokeType?,
     private val onSample: (PoseSample?, Evaluation?) -> Unit,
-    private val onServe: (ReviewedServe) -> Unit,
+    private val onStroke: (ReviewedStroke) -> Unit,
 ) : ImageAnalysis.Analyzer {
     private val detector = BodyPoseDetector(stream = true)
-    private var tracker = ServeTracker(hand)
+    private var serveTracker = ServeTracker(hand)
+    private var strokeTracker = StrokeTracker(hand, stroke)
     private val snapshots = ArrayDeque<Triple<Double, Bitmap, PoseSample>>()
     private var lastSnapshot = Double.NEGATIVE_INFINITY
     private var lastPublish = 0L
@@ -93,34 +101,45 @@ private class LiveAnalyzer(
             val width = if (upright) proxy.height else proxy.width
             val height = if (upright) proxy.width else proxy.height
             val time = proxy.imageInfo.timestamp / 1e9
-            if (tracker.hand != hand) tracker = ServeTracker(hand)
+            if (serveTracker.hand != hand) serveTracker = ServeTracker(hand)
+            if (strokeTracker.hand != hand || strokeTracker.type != stroke) strokeTracker = StrokeTracker(hand, stroke)
 
             val sample = detector.detect(InputImage.fromMediaImage(media, rotation), width, height)
-            var serve: ReviewedServe? = null
+            var finished: ReviewedStroke? = null
             if (sample != null) {
                 if (time - lastSnapshot >= 0.1) {
                     lastSnapshot = time
                     snapshots.addLast(Triple(time, proxy.uprightBitmap(rotation), sample))
-                    while (snapshots.first().first < time - tracker.window) snapshots.removeFirst()
+                    while (snapshots.first().first < time - 3.5) snapshots.removeFirst()
                 }
-                serve = tracker.add(Frame(time, sample.pose))?.let(::review)
+                val frame = Frame(time, sample.pose)
+                val result = if (stroke == StrokeType.SERVE) serveTracker.add(frame)?.stroke else strokeTracker.add(frame)
+                finished = result?.let(::review)
             }
             val now = SystemClock.elapsedRealtime()
-            if (serve != null || now - lastPublish > 66) {
+            if (finished != null || now - lastPublish > 66) {
                 lastPublish = now
-                onSample(sample, sample?.let { ServeAnalyzer.evaluate(it.pose, hand) })
+                // Hold-pose feedback: the serve's trophy and contact, or the ready position for other strokes.
+                val live = sample?.let {
+                    if (stroke == StrokeType.SERVE) ServeAnalyzer.evaluate(it.pose, hand) else StrokeAnalyzer.readyPosition(it.pose)
+                }
+                onSample(sample, live)
             }
-            serve?.let(onServe)
+            finished?.let(onStroke)
         }
     }
 
-    /** Match a serve's key frames to the nearest stored stills. */
-    private fun review(result: ServeResult): ReviewedServe {
-        fun nearest(frame: Frame?) = frame?.let { f -> snapshots.minByOrNull { kotlin.math.abs(it.first - f.time) } }
-        val trophy = nearest(result.trophyFrame)
-        val contact = nearest(result.contactFrame)
-        snapshots.clear()
-        return ReviewedServe(result, trophy?.second, contact?.second, trophy?.third, contact?.third)
+    /** Match a stroke's key frames to the nearest stored stills. */
+    private fun review(result: StrokeResult): ReviewedStroke {
+        val images = mutableMapOf<Phase, Bitmap>()
+        val samples = mutableMapOf<Phase, PoseSample>()
+        for (key in result.keyFrames) {
+            val nearest = snapshots.minByOrNull { kotlin.math.abs(it.first - key.frame.time) } ?: continue
+            images[key.phase] = nearest.second
+            samples[key.phase] = nearest.third
+        }
+        snapshots.removeAll { it.first <= result.time + 0.5 }
+        return ReviewedStroke(result, images, samples)
     }
 
     fun close() = detector.close()
@@ -137,7 +156,7 @@ private fun ImageProxy.uprightBitmap(rotation: Int): Bitmap {
 }
 
 @Composable
-fun LiveScreen(vm: AppViewModel, onReview: (ReviewedServe) -> Unit) {
+fun LiveScreen(vm: AppViewModel, onReview: (ReviewedStroke) -> Unit) {
     val context = LocalContext.current
     var granted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
@@ -147,7 +166,7 @@ fun LiveScreen(vm: AppViewModel, onReview: (ReviewedServe) -> Unit) {
     if (!granted) {
         Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
             Text("Camera access needed", style = MaterialTheme.typography.titleLarge)
-            Text("Serve Coach watches your body position while you serve. Video never leaves your phone.", textAlign = TextAlign.Center)
+            Text("Serve Coach watches your body position while you play. Video never leaves your phone.", textAlign = TextAlign.Center)
             Spacer(Modifier.padding(8.dp))
             Button(onClick = { launcher.launch(Manifest.permission.CAMERA) }) { Text("Allow camera") }
         }
@@ -157,8 +176,8 @@ fun LiveScreen(vm: AppViewModel, onReview: (ReviewedServe) -> Unit) {
     var front by remember { mutableStateOf(false) }
     var sample by remember { mutableStateOf<PoseSample?>(null) }
     var live by remember { mutableStateOf<Evaluation?>(null) }
-    var lastServe by remember { mutableStateOf<ReviewedServe?>(null) }
-    var serveCount by remember { mutableIntStateOf(0) }
+    var lastStroke by remember { mutableStateOf<ReviewedStroke?>(null) }
+    var strokeCount by remember { mutableIntStateOf(0) }
     var holdMode by remember { mutableStateOf(false) }
     val currentVm by rememberUpdatedState(vm)
 
@@ -175,27 +194,29 @@ fun LiveScreen(vm: AppViewModel, onReview: (ReviewedServe) -> Unit) {
     val analyzer = remember {
         LiveAnalyzer(
             hand = vm.hand,
+            stroke = vm.practiceStroke,
             onSample = { s, e ->
                 previewView.post {
                     sample = s
                     if (e != null) live = e
                 }
             },
-            onServe = { serve ->
+            onStroke = { stroke ->
                 previewView.post {
-                    lastServe = serve
-                    serveCount++
-                    currentVm.record(serve)
+                    lastStroke = stroke
+                    strokeCount++
+                    currentVm.record(stroke)
                     if (currentVm.spokenCues) {
-                        val score = serve.result.score?.let { "Score $it. " } ?: ""
-                        val tip = serve.result.topTip?.tip ?: "Great serve posture!"
-                        tts.value?.speak(score + tip, TextToSpeech.QUEUE_FLUSH, null, serve.id)
+                        val score = stroke.result.score?.let { "${stroke.result.title}, $it. " } ?: ""
+                        val tip = stroke.result.topTip?.tip ?: "Great ${stroke.result.title.lowercase()}!"
+                        tts.value?.speak(score + tip, TextToSpeech.QUEUE_FLUSH, null, stroke.id)
                     }
                 }
             },
         )
     }
     analyzer.hand = vm.hand
+    analyzer.stroke = vm.practiceStroke
 
     DisposableEffect(front) {
         val executor = Executors.newSingleThreadExecutor()
@@ -219,7 +240,7 @@ fun LiveScreen(vm: AppViewModel, onReview: (ReviewedServe) -> Unit) {
     }
     DisposableEffect(Unit) { onDispose { analyzer.close() } }
 
-    val phaseColor = when (sample?.let { ServeAnalyzer.phase(it.pose, vm.hand) }) {
+    val phaseColor = when (sample?.takeIf { vm.practiceStroke == StrokeType.SERVE }?.let { ServeAnalyzer.phase(it.pose, vm.hand) }) {
         Phase.TROPHY -> Color.Yellow
         Phase.CONTACT -> Color.Cyan
         else -> Color.Green
@@ -236,34 +257,39 @@ fun LiveScreen(vm: AppViewModel, onReview: (ReviewedServe) -> Unit) {
                     Spacer(Modifier.width(8.dp))
                     FilledTonalIconButton(onClick = { front = !front }) { Icon(Icons.Filled.Cameraswitch, "Switch camera") }
                 }
+                StrokePicker(vm.practiceStroke, vm::updatePracticeStroke, Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp))
             }
             Spacer(Modifier.weight(1f))
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                SegmentedButton(!holdMode, { holdMode = false }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("Last serve") }
-                SegmentedButton(holdMode, { holdMode = true }, SegmentedButtonDefaults.itemShape(1, 2)) { Text("Hold pose") }
+                SegmentedButton(!holdMode, { holdMode = false }, SegmentedButtonDefaults.itemShape(0, 2)) { Text("Last stroke") }
+                SegmentedButton(holdMode, { holdMode = true }, SegmentedButtonDefaults.itemShape(1, 2)) {
+                    Text(if (vm.practiceStroke == StrokeType.SERVE) "Hold pose" else "Ready position")
+                }
             }
             Spacer(Modifier.padding(4.dp))
             Column(Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val serve = lastServe
+                val stroke = lastStroke
                 when {
-                    holdMode -> live?.let { EvaluationCard(it) } ?: Hint("Raise your tossing arm into the trophy position and hold it.")
-                    serve != null -> {
+                    holdMode -> live?.let { EvaluationCard(it) } ?: Hint(
+                        if (vm.practiceStroke == StrokeType.SERVE) "Raise your tossing arm into the trophy position and hold it."
+                        else "Get into your ready position: knees bent, feet wide, racket up in front."
+                    )
+                    stroke != null -> {
                         Card(Modifier.fillMaxWidth()) {
                             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text("Serve #$serveCount", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                                Button(onClick = { onReview(serve) }) {
+                                Text("${stroke.result.title} #$strokeCount", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                                Button(onClick = { onReview(stroke) }) {
                                     Icon(Icons.Filled.AutoAwesome, null)
                                     Spacer(Modifier.width(4.dp))
                                     Text("AI coach")
                                 }
                                 Spacer(Modifier.width(8.dp))
-                                ScoreBadge(serve.result.score)
+                                ScoreBadge(stroke.result.score)
                             }
                         }
-                        serve.result.trophy?.let { EvaluationCard(it) }
-                        serve.result.contact?.let { EvaluationCard(it) }
+                        stroke.result.evaluations.forEach { EvaluationCard(it) }
                     }
-                    else -> Hint("Set the phone up side-on, about 4 m away, with your whole body in frame. Then serve!")
+                    else -> Hint("Set the phone up side-on, about 4 m away, with your whole body in frame. Then hit!")
                 }
             }
         }
@@ -274,6 +300,20 @@ fun LiveScreen(vm: AppViewModel, onReview: (ReviewedServe) -> Unit) {
 fun Hint(text: String) {
     Card(Modifier.fillMaxWidth()) {
         Text(text, Modifier.padding(16.dp).fillMaxWidth(), textAlign = TextAlign.Center)
+    }
+}
+
+/** Serve, Forehand, ... or Any (worked out from each swing). */
+@Composable
+fun StrokePicker(selected: StrokeType?, onChange: (StrokeType?) -> Unit, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.lazy.LazyRow(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        items(listOf<StrokeType?>(null) + StrokeType.entries) { type ->
+            androidx.compose.material3.FilterChip(
+                selected = selected == type,
+                onClick = { onChange(type) },
+                label = { Text(type?.title ?: "Any") },
+            )
+        }
     }
 }
 

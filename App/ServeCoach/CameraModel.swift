@@ -5,16 +5,16 @@ import QuartzCore
 import ServeAnalysis
 import UIKit
 
-/// Runs the camera, detects the player's pose on every frame, and tracks serves.
+/// Runs the camera, detects the player's pose on every frame, and tracks strokes.
 @Observable
 final class CameraModel: NSObject {
     /// Latest detected pose (published at most ~15×/s).
     private(set) var sample: PoseSample?
     /// Live evaluation of the current pose, for holding positions during shadow drills.
     private(set) var liveEvaluation: Evaluation?
-    /// The most recently completed serve, with stills of its key frames.
-    private(set) var lastServe: ReviewedServe?
-    private(set) var serveCount = 0
+    /// The most recently completed stroke, with stills of its key frames.
+    private(set) var lastStroke: ReviewedStroke?
+    private(set) var strokeCount = 0
     private(set) var position: AVCaptureDevice.Position = .back
     private(set) var permissionDenied = false
 
@@ -28,16 +28,20 @@ final class CameraModel: NSObject {
     @ObservationIgnored private let speech = AVSpeechSynthesizer()
     @ObservationIgnored private var configured = false
     // Only touched on `videoQueue`.
-    @ObservationIgnored private var tracker = ServeTracker(hand: .right)
+    @ObservationIgnored private var hand = Handedness.right
+    /// The stroke being practised; nil means work it out from each swing.
+    @ObservationIgnored private var stroke: StrokeType? = .serve
+    @ObservationIgnored private var serveTracker = ServeTracker(hand: .right)
+    @ObservationIgnored private var strokeTracker = StrokeTracker(hand: .right, type: nil)
     @ObservationIgnored private var lastPublish: CFTimeInterval = 0
     @ObservationIgnored private let ciContext = CIContext()
-    /// Downscaled stills of the last few seconds, so a finished serve can be reviewed and sent to the AI coach.
+    /// Downscaled stills of the last few seconds, so a finished stroke can be reviewed and sent to the AI coach.
     @ObservationIgnored private var snapshots: [(time: Double, image: CGImage, sample: PoseSample)] = []
     @ObservationIgnored private var lastSnapshotTime = -Double.infinity
     private static let snapshotInterval = 1.0 / 10
 
-    func start(hand: Handedness) {
-        setHand(hand)
+    func start(hand: Handedness, stroke: StrokeType?) {
+        setTracking(hand: hand, stroke: stroke)
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             startSession()
@@ -56,8 +60,13 @@ final class CameraModel: NSObject {
         sessionQueue.async { self.session.stopRunning() }
     }
 
-    func setHand(_ hand: Handedness) {
-        videoQueue.async { self.tracker = ServeTracker(hand: hand) }
+    func setTracking(hand: Handedness, stroke: StrokeType?) {
+        videoQueue.async {
+            self.hand = hand
+            self.stroke = stroke
+            self.serveTracker = ServeTracker(hand: hand)
+            self.strokeTracker = StrokeTracker(hand: hand, type: stroke)
+        }
     }
 
     func switchCamera() {
@@ -110,31 +119,26 @@ final class CameraModel: NSObject {
         guard let cgImage = ciContext.createCGImage(image, from: image.extent) else { return }
         lastSnapshotTime = time
         snapshots.append((time, cgImage, sample))
-        snapshots.removeAll { $0.time < time - tracker.window }
+        snapshots.removeAll { $0.time < time - 3.5 }
     }
 
-    /// Match a serve's key frames to the nearest stored stills. Called on `videoQueue`.
-    private func review(_ result: ServeResult) -> ReviewedServe {
-        func nearest(_ frame: Frame?) -> (time: Double, image: CGImage, sample: PoseSample)? {
-            guard let frame else { return nil }
-            return snapshots.min { abs($0.time - frame.time) < abs($1.time - frame.time) }
+    /// Match a stroke's key frames to the nearest stored stills. Called on `videoQueue`.
+    private func review(_ result: StrokeResult) -> ReviewedStroke {
+        var images: [Phase: UIImage] = [:]
+        var samples: [Phase: PoseSample] = [:]
+        for key in result.keyFrames {
+            guard let nearest = snapshots.min(by: { abs($0.time - key.frame.time) < abs($1.time - key.frame.time) }) else { continue }
+            images[key.phase] = UIImage(cgImage: nearest.image)
+            samples[key.phase] = nearest.sample
         }
-        let trophy = nearest(result.trophyFrame)
-        let contact = nearest(result.contactFrame)
-        snapshots.removeAll()
-        return ReviewedServe(
-            result: result,
-            trophyImage: trophy.map { UIImage(cgImage: $0.image) },
-            contactImage: contact.map { UIImage(cgImage: $0.image) },
-            trophySample: trophy?.sample,
-            contactSample: contact?.sample
-        )
+        snapshots.removeAll { $0.time <= result.time + 0.5 }
+        return ReviewedStroke(result: result, images: images, samples: samples)
     }
 
-    private func speak(_ result: ServeResult) {
+    private func speak(_ result: StrokeResult) {
         guard spokenCues else { return }
-        var text = result.score.map { "Score \($0)." } ?? ""
-        if let tip = result.topTip { text += " \(tip.tip)" } else { text += " Great serve posture!" }
+        var text = result.score.map { "\(result.title), \($0)." } ?? ""
+        if let tip = result.topTip { text += " \(tip.tip)" } else { text += " Great \(result.title.lowercased())!" }
         speech.stopSpeaking(at: .immediate)
         speech.speak(AVSpeechUtterance(string: text))
     }
@@ -146,25 +150,28 @@ extension CameraModel: AVCaptureVideoDataOutputSampleBufferDelegate {
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         let sample = detector.detect(pixelBuffer: pixelBuffer)
 
-        var serve: ReviewedServe?
+        var finished: ReviewedStroke?
         if let sample {
             storeSnapshot(pixelBuffer, sample: sample, time: time)
-            serve = tracker.add(Frame(time: time, pose: sample.pose)).map(review)
+            let frame = Frame(time: time, pose: sample.pose)
+            let result = stroke == .serve ? serveTracker.add(frame)?.stroke : strokeTracker.add(frame)
+            finished = result.map(review)
         }
-        let live = sample.flatMap { ServeAnalyzer.evaluate($0.pose, hand: tracker.hand) }
+        // Hold-pose feedback: the serve's trophy and contact, or the ready position for other strokes.
+        let live = sample.flatMap { stroke == .serve ? ServeAnalyzer.evaluate($0.pose, hand: hand) : StrokeAnalyzer.readyPosition($0.pose) }
 
-        // Always deliver completed serves; throttle the per-frame UI updates.
+        // Always deliver completed strokes; throttle the per-frame UI updates.
         let now = CACurrentMediaTime()
-        guard serve != nil || now - lastPublish > 1.0 / 15 else { return }
+        guard finished != nil || now - lastPublish > 1.0 / 15 else { return }
         lastPublish = now
 
         DispatchQueue.main.async {
             self.sample = sample
             if let live { self.liveEvaluation = live }
-            if let serve {
-                self.lastServe = serve
-                self.serveCount += 1
-                self.speak(serve.result)
+            if let finished {
+                self.lastStroke = finished
+                self.strokeCount += 1
+                self.speak(finished.result)
             }
         }
     }

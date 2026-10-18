@@ -6,51 +6,66 @@ import java.io.File
 import java.util.UUID
 import kotlin.math.roundToInt
 
-/** A saved serve, small enough to keep hundreds of them. Mirrors `ServeRecord` in the Swift package. */
+/** A saved stroke or match, small enough to keep hundreds of them. Mirrors `PracticeRecord` in the Swift package. */
 @Serializable
-data class ServeRecord(
+data class PracticeRecord(
     val id: String = UUID.randomUUID().toString(),
     /** Milliseconds since the epoch. */
     val date: Long = System.currentTimeMillis(),
+    /** A [StrokeType.key], or [MATCH_KIND]. */
+    val kind: String,
     val score: Int?,
-    val trophyScore: Int?,
-    val contactScore: Int?,
-    /** Label of the most important thing to fix, if any. */
+    /** One line of detail, e.g. "Trophy position 80 · Contact 60" or "38 strokes in about 9 rallies". */
+    val detail: String,
+    /** The most important thing to fix, if any. */
     val topFix: String?,
     val handedness: String,
 ) {
+    /** "Forehand", "Match", ... */
+    val title: String get() = StrokeType.entries.firstOrNull { it.key == kind }?.title ?: "Match"
+
     companion object {
-        fun of(result: ServeResult, hand: Handedness) = ServeRecord(
-            score = result.score,
-            trophyScore = result.trophy?.score,
-            contactScore = result.contact?.score,
-            topFix = result.topTip?.label,
+        const val MATCH_KIND = "match"
+
+        fun of(stroke: StrokeResult, hand: Handedness) = PracticeRecord(
+            kind = stroke.type.key,
+            score = stroke.score,
+            detail = stroke.evaluations.joinToString(" · ") { "${it.phase.title} ${it.score ?: "—"}" },
+            topFix = stroke.topTip?.label,
+            handedness = hand.name.lowercase(),
+        )
+
+        fun of(match: MatchReport, hand: Handedness) = PracticeRecord(
+            kind = MATCH_KIND,
+            score = match.score,
+            detail = match.countsText,
+            topFix = Coach.ruleBased(match).improvements.firstOrNull()?.title,
             handedness = hand.name.lowercase(),
         )
     }
 }
 
-/** Keeps serve history in a JSON file on the device. */
+/** Keeps practice history in a JSON file on the device. */
 class HistoryStore(private val file: File) {
     private val json = Json { ignoreUnknownKeys = true }
-    private var cached: List<ServeRecord>? = null
+    private var cached: List<PracticeRecord>? = null
 
     /** Newest first. */
     @get:Synchronized
-    val records: List<ServeRecord>
+    val records: List<PracticeRecord>
         get() = load()
 
     @Synchronized
-    fun add(record: ServeRecord) = save((listOf(record) + load()).take(MAX_RECORDS))
+    fun add(record: PracticeRecord) = save((listOf(record) + load()).take(MAX_RECORDS))
 
     @Synchronized
     fun clear() = save(emptyList())
 
-    private fun load(): List<ServeRecord> = cached ?: runCatching {
-        json.decodeFromString<List<ServeRecord>>(file.readText())
+    private fun load(): List<PracticeRecord> = cached ?: runCatching {
+        json.decodeFromString<List<PracticeRecord>>(file.readText())
     }.getOrDefault(emptyList()).also { cached = it }
 
-    private fun save(records: List<ServeRecord>) {
+    private fun save(records: List<PracticeRecord>) {
         file.parentFile?.mkdirs()
         val tmp = File(file.path + ".tmp")
         tmp.writeText(json.encodeToString(records))
@@ -68,10 +83,10 @@ class HistoryStore(private val file: File) {
 
 object HistoryStats {
     /**
-     * Change in average score between the latest [window] scored serves and the [window] before them.
-     * Null until there are enough serves to compare.
+     * Change in average score between the latest [window] scored records and the [window] before them.
+     * Pass records of one kind for a meaningful trend. Null until there are enough records to compare.
      */
-    fun trend(records: List<ServeRecord>, window: Int = 5): Int? {
+    fun trend(records: List<PracticeRecord>, window: Int = 5): Int? {
         val scores = records.mapNotNull { it.score }
         if (scores.size < window * 2) return null
         val recent = scores.take(window).sum()
@@ -79,8 +94,8 @@ object HistoryStats {
         return ((recent - earlier).toDouble() / window).roundToInt()
     }
 
-    /** The fix that came up most often in recent serves. */
-    fun mostCommonFix(records: List<ServeRecord>, last: Int = 20): String? =
+    /** The fix that came up most often in recent records. */
+    fun mostCommonFix(records: List<PracticeRecord>, last: Int = 20): String? =
         records.take(last).mapNotNull { it.topFix }.groupingBy { it }.eachCount()
             .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
             .firstOrNull()?.key

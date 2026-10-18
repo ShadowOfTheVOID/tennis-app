@@ -1,13 +1,15 @@
 import Foundation
 
 public enum Phase: String, Sendable {
-    case ready, trophy, contact
+    case ready, trophy, preparation, contact, finish
 
     public var title: String {
         switch self {
-        case .ready: "Ready"
+        case .ready: "Ready position"
         case .trophy: "Trophy position"
+        case .preparation: "Preparation"
         case .contact: "Contact"
+        case .finish: "Finish"
         }
     }
 }
@@ -32,11 +34,24 @@ public struct Check: Identifiable, Sendable {
     /// Measured value, formatted for display (e.g. "95°").
     public let value: String
     public let tip: String
+
+    public init(id: String, label: String, status: Status, value: String, tip: String) {
+        self.id = id
+        self.label = label
+        self.status = status
+        self.value = value
+        self.tip = tip
+    }
 }
 
 public struct Evaluation: Sendable {
     public let phase: Phase
     public let checks: [Check]
+
+    public init(phase: Phase, checks: [Check]) {
+        self.phase = phase
+        self.checks = checks
+    }
 
     /// 0–100 over the checks that could be measured, or nil if none could.
     public var score: Int? {
@@ -73,7 +88,7 @@ public enum ServeAnalyzer {
         switch phase(of: pose, hand: hand) {
         case .trophy: trophy(pose, hand: hand)
         case .contact: contact(pose, hand: hand)
-        case .ready: nil
+        case .ready, .preparation, .finish: nil
         }
     }
 
@@ -218,14 +233,14 @@ public enum ServeAnalyzer {
         return angles.reduce(0, +) / Double(angles.count)
     }
 
-    private static func band(_ v: Double, good: ClosedRange<Double>, warn: ClosedRange<Double>) -> Status {
+    static func band(_ v: Double, good: ClosedRange<Double>, warn: ClosedRange<Double>) -> Status {
         good.contains(v) ? .good : warn.contains(v) ? .warn : .bad
     }
 
-    private static func deg(_ v: Double) -> String { "\(Int(v.rounded()))°" }
-    private static func torso(_ v: Double) -> String { String(format: "%.2f× torso", v) }
+    static func deg(_ v: Double) -> String { "\(Int(v.rounded()))°" }
+    static func torso(_ v: Double) -> String { String(format: "%.2f× torso", v) }
 
-    private static func unknown(_ id: String, _ label: String) -> Check {
+    static func unknown(_ id: String, _ label: String) -> Check {
         Check(id: id, label: label, status: .unknown, value: "—",
               tip: "Not enough of your body is visible. Step back so your whole body is in frame.")
     }

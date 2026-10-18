@@ -19,63 +19,120 @@ struct PickedVideo: Transferable {
     }
 }
 
-enum VideoAnalyzer {
-    /// Frames sampled per second of video.
-    static let sampleRate = 15.0
-    /// Longest stretch of video analysed; one serve takes a couple of seconds.
-    static let maxDuration = 20.0
+/// An analysed match video. Stills for each stroke are pulled from the video only when a
+/// stroke is opened, so long videos don't fill memory.
+struct AnalyzedMatch: Identifiable {
+    let id = UUID()
+    let report: MatchReport
+    let video: URL
+    /// Pose at each stroke's key moments, for drawing the skeleton.
+    let samples: [Double: PoseSample]
+}
 
-    static func analyze(url: URL, hand: Handedness, progress: @escaping (Double) -> Void) async throws -> ReviewedServe {
-        let asset = AVURLAsset(url: url)
-        let duration = min(try await asset.load(.duration).seconds, maxDuration)
-        let generator = AVAssetImageGenerator(asset: asset)
+extension AnalyzedMatch: Hashable {
+    static func == (a: Self, b: Self) -> Bool { a.id == b.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+enum VideoAnalyzer {
+    /// A single stroke: dense sampling, up to 20 s.
+    static let strokeFPS = 15.0
+    static let strokeMaxSeconds = 20.0
+    /// A match: lighter sampling, up to 10 minutes.
+    static let matchFPS = 10.0
+    static let matchMaxSeconds = 600.0
+
+    /// Analyse a clip of one stroke. Nil if no stroke was found.
+    static func analyzeStroke(url: URL, hand: Handedness, type: StrokeType?, progress: @escaping (Double) -> Void) async throws -> ReviewedStroke? {
+        let (frames, samples) = try await poses(url: url, fps: strokeFPS, maxSeconds: strokeMaxSeconds, progress: progress)
+        guard let result = StrokeAnalyzer.analyzeClip(frames, type: type, hand: hand) else { return nil }
+        return await stills(url: url, result: result, samples: samples)
+    }
+
+    static func analyzeMatch(url: URL, hand: Handedness, progress: @escaping (Double) -> Void) async throws -> AnalyzedMatch {
+        let (frames, samples) = try await poses(url: url, fps: matchFPS, maxSeconds: matchMaxSeconds, progress: progress)
+        let report = MatchAnalyzer.analyze(frames, hand: hand)
+        let keyTimes = Set(report.strokes.flatMap { $0.keyFrames.map(\.frame.time) })
+        return AnalyzedMatch(report: report, video: url, samples: samples.filter { keyTimes.contains($0.key) })
+    }
+
+    /// Pull the stills for one stroke's key moments from the video.
+    static func stills(url: URL, result: StrokeResult, samples: [Double: PoseSample]) async -> ReviewedStroke {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 960, height: 960)
-        let tolerance = CMTime(seconds: 0.5 / sampleRate, preferredTimescale: 600)
+        let tolerance = CMTime(seconds: 0.02, preferredTimescale: 600)
         generator.requestedTimeToleranceBefore = tolerance
         generator.requestedTimeToleranceAfter = tolerance
+        var images: [Phase: UIImage] = [:]
+        var poseSamples: [Phase: PoseSample] = [:]
+        for key in result.keyFrames {
+            if let image = try? await generator.image(at: CMTime(seconds: key.frame.time, preferredTimescale: 600)).image {
+                images[key.phase] = UIImage(cgImage: image)
+            }
+            poseSamples[key.phase] = samples[key.frame.time]
+        }
+        return ReviewedStroke(result: result, images: images, samples: poseSamples)
+    }
+
+    /// Decode the video in order and detect a pose about `fps` times a second.
+    /// Sequential decoding is far faster than seeking to each frame, which matters for long matches.
+    private static func poses(url: URL, fps: Double, maxSeconds: Double, progress: @escaping (Double) -> Void) async throws
+        -> (frames: [Frame], samples: [Double: PoseSample]) {
+        let asset = AVURLAsset(url: url)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { return ([], [:]) }
+        let duration = min(try await asset.load(.duration).seconds, maxSeconds)
+        let orientation = orientation(of: try await track.load(.preferredTransform))
+
+        let reader = try AVAssetReader(asset: asset)
+        reader.timeRange = CMTimeRange(start: .zero, duration: CMTime(seconds: duration, preferredTimescale: 600))
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        ])
+        output.alwaysCopiesSampleData = false
+        reader.add(output)
+        guard reader.startReading() else { throw reader.error ?? CocoaError(.fileReadCorruptFile) }
+        defer { reader.cancelReading() }
 
         let detector = PoseDetector()
         var frames: [Frame] = []
         var samples: [Double: PoseSample] = [:]
-        let count = max(1, Int(duration * sampleRate))
-
-        for i in 0..<count {
+        var next = 0.0
+        while let buffer = output.copyNextSampleBuffer() {
             try Task.checkCancellation()
-            let time = Double(i) / sampleRate
-            if let image = try? await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)).image,
-               let sample = detector.detect(cgImage: image) {
+            let time = CMSampleBufferGetPresentationTimeStamp(buffer).seconds
+            guard time >= next, let pixels = CMSampleBufferGetImageBuffer(buffer) else { continue }
+            next = time + 1 / fps - 0.005
+            if let sample = detector.detect(pixelBuffer: pixels, orientation: orientation) {
                 frames.append(Frame(time: time, pose: sample.pose))
                 samples[time] = sample
             }
-            progress(Double(i + 1) / Double(count))
+            progress(duration > 0 ? min(1, time / duration) : 1)
         }
+        return (frames, samples)
+    }
 
-        let result = ServeAnalyzer.analyze(frames, hand: hand)
-
-        func still(_ frame: Frame?) async -> UIImage? {
-            guard let frame,
-                  let image = try? await generator.image(at: CMTime(seconds: frame.time, preferredTimescale: 600)).image
-            else { return nil }
-            return UIImage(cgImage: image)
+    /// How the video's frames are rotated relative to upright, from its track transform.
+    private static func orientation(of t: CGAffineTransform) -> CGImagePropertyOrientation {
+        switch (t.a, t.b, t.c, t.d) {
+        case (0, 1, -1, 0): .right
+        case (0, -1, 1, 0): .left
+        case (-1, 0, 0, -1): .down
+        default: .up
         }
-
-        return ReviewedServe(
-            result: result,
-            trophyImage: await still(result.trophyFrame),
-            contactImage: await still(result.contactFrame),
-            trophySample: result.trophyFrame.flatMap { samples[$0.time] },
-            contactSample: result.contactFrame.flatMap { samples[$0.time] }
-        )
     }
 }
 
 struct VideoAnalysisView: View {
     @AppStorage("handedness") private var hand: Handedness = .right
     @Environment(AppState.self) private var app
+    @State private var matchMode = false
+    /// A `StrokeType` raw value, or "any".
+    @State private var strokeType = "any"
     @State private var item: PhotosPickerItem?
     @State private var progress: Double?
-    @State private var serve: ReviewedServe?
+    @State private var stroke: ReviewedStroke?
+    @State private var match: AnalyzedMatch?
     @State private var error: String?
 
     var body: some View {
@@ -84,34 +141,20 @@ struct VideoAnalysisView: View {
                 if let progress {
                     VStack(spacing: 12) {
                         ProgressView(value: progress)
-                        Text("Finding your trophy position and contact point…").font(.callout)
+                        Text(matchMode ? "Finding every stroke… long matches take a few minutes." : "Finding your stroke's key moments…")
+                            .font(.callout)
+                            .multilineTextAlignment(.center)
+                        Button("Cancel") { item = nil }
                     }
                     .padding()
-                } else if let serve {
-                    if serve.result.trophyFrame == nil && serve.result.contactFrame == nil {
-                        ContentUnavailableView(
-                            "No serve found",
-                            systemImage: "figure.tennis",
-                            description: Text("Make sure your whole body is visible and the clip includes the toss and contact.")
-                        )
-                    } else {
-                        ServeReviewView(serve: serve, hand: hand)
-                    }
                 } else {
-                    ContentUnavailableView {
-                        Label("Analyze a serve video", systemImage: "video.badge.waveform")
-                    } description: {
-                        Text("Film one serve side-on with your whole body in frame, then pick the clip here.")
-                    }
+                    picker
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .navigationTitle("Video")
-            .toolbar {
-                PhotosPicker(selection: $item, matching: .videos) {
-                    Label("Pick video", systemImage: "photo.on.rectangle")
-                }
-            }
+            .navigationDestination(item: $stroke) { StrokeReviewView(stroke: $0, hand: hand) }
+            .navigationDestination(item: $match) { MatchView(match: $0, hand: hand) }
             .alert("Couldn't analyze video", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK") { error = nil }
             } message: {
@@ -121,20 +164,62 @@ struct VideoAnalysisView: View {
         }
     }
 
+    private var picker: some View {
+        VStack(spacing: 16) {
+            Picker("Mode", selection: $matchMode) {
+                Text("One stroke").tag(false)
+                Text("Match").tag(true)
+            }
+            .pickerStyle(.segmented)
+
+            Image(systemName: matchMode ? "sportscourt" : "video.badge.waveform").font(.largeTitle).foregroundStyle(.secondary)
+            if matchMode {
+                Text("Analyze a match or rally").font(.title3.bold())
+                Text("Film from the side of the court with your whole body in frame. Up to \(Int(VideoAnalyzer.matchMaxSeconds / 60)) minutes. "
+                     + "You'll get every stroke graded, footwork and movement, and a match plan.")
+                    .multilineTextAlignment(.center)
+            } else {
+                Text("Analyze one stroke").font(.title3.bold())
+                Text("Film one stroke side-on with your whole body in frame, then pick the clip.").multilineTextAlignment(.center)
+                StrokePicker(selection: $strokeType)
+            }
+            PhotosPicker(selection: $item, matching: .videos) {
+                Label("Pick video", systemImage: "photo.on.rectangle").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding()
+    }
+
     private func load() async {
         guard let item else { return }
-        serve = nil
         progress = 0
-        defer { progress = nil }
+        defer {
+            progress = nil
+            self.item = nil
+        }
         do {
             guard let video = try await item.loadTransferable(type: PickedVideo.self) else { return }
-            defer { try? FileManager.default.removeItem(at: video.url) }
-            let analyzed = try await VideoAnalyzer.analyze(url: video.url, hand: hand) { value in
-                Task { @MainActor in if progress != nil { progress = value } }
-            }
-            serve = analyzed
-            if analyzed.result.trophyFrame != nil || analyzed.result.contactFrame != nil {
-                app.record(analyzed, hand: hand)
+            let report: (Double) -> Void = { value in Task { @MainActor in if progress != nil { progress = value } } }
+            if matchMode {
+                // Keep the file: opening a stroke later pulls its stills from the video.
+                if let old = match?.video { try? FileManager.default.removeItem(at: old) }
+                let analyzed = try await VideoAnalyzer.analyzeMatch(url: video.url, hand: hand, progress: report)
+                if analyzed.report.strokes.isEmpty {
+                    error = "No strokes found. Film from the side with your whole body in frame, and keep the camera still."
+                } else {
+                    app.record(analyzed, hand: hand)
+                    match = analyzed
+                }
+            } else {
+                defer { try? FileManager.default.removeItem(at: video.url) }
+                let analyzed = try await VideoAnalyzer.analyzeStroke(url: video.url, hand: hand, type: StrokeType(rawValue: strokeType), progress: report)
+                if let analyzed {
+                    app.record(analyzed, hand: hand)
+                    stroke = analyzed
+                } else {
+                    error = "No stroke found. Make sure your whole body is visible and the clip includes the whole swing."
+                }
             }
         } catch is CancellationError {
             return

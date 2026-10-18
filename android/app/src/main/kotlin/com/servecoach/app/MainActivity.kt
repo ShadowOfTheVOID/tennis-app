@@ -26,6 +26,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
@@ -52,16 +53,18 @@ class MainActivity : ComponentActivity() {
             val green = Color(0xFF1B6B3A)
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme(primary = Color(0xFF7FD69B)) else lightColorScheme(primary = green)) {
                 var tab by rememberSaveable { mutableStateOf(Tab.LIVE) }
-                var reviewing by remember { mutableStateOf<ReviewedServe?>(null) }
-                BackHandler(enabled = reviewing != null) { reviewing = null }
+                // Screens opened on top of the tabs: a match report, then a stroke review from it.
+                val stack = remember { mutableStateListOf<Any>() }
+                val top = stack.lastOrNull()
+                BackHandler(enabled = top != null) { stack.removeAt(stack.lastIndex) }
 
                 Scaffold(
                     topBar = {
-                        if (reviewing != null) {
+                        if (top != null) {
                             TopAppBar(
-                                title = { Text("Serve review") },
+                                title = { Text(if (top is AnalyzedMatch) "Match report" else "Stroke review") },
                                 navigationIcon = {
-                                    IconButton(onClick = { reviewing = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                                    IconButton(onClick = { stack.removeAt(stack.lastIndex) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                                 },
                             )
                         } else if (tab != Tab.LIVE) {
@@ -69,7 +72,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     bottomBar = {
-                        if (reviewing == null) {
+                        if (top == null) {
                             NavigationBar {
                                 Tab.entries.forEach { t ->
                                     NavigationBarItem(
@@ -84,12 +87,12 @@ class MainActivity : ComponentActivity() {
                     },
                 ) { padding ->
                     val modifier = Modifier.padding(padding)
-                    val serve = reviewing
                     androidx.compose.foundation.layout.Box(modifier) {
                         when {
-                            serve != null -> ReviewScreen(vm, serve)
-                            tab == Tab.LIVE -> LiveScreen(vm) { reviewing = it }
-                            tab == Tab.VIDEO -> VideoScreen(vm) { reviewing = it }
+                            top is ReviewedStroke -> ReviewScreen(vm, top)
+                            top is AnalyzedMatch -> MatchScreen(vm, top) { stack.add(it) }
+                            tab == Tab.LIVE -> LiveScreen(vm) { stack.add(it) }
+                            tab == Tab.VIDEO -> VideoScreen(vm, onReview = { stack.add(it) }, onMatch = { stack.add(it) })
                             tab == Tab.HISTORY -> HistoryScreen(vm)
                             else -> SettingsScreen(vm)
                         }

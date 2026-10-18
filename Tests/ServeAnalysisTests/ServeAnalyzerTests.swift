@@ -143,7 +143,7 @@ final class CoachTests: XCTestCase {
     }
 
     func testRuleBasedPlanPrioritisesFailures() {
-        let report = Coach.ruleBased(badTrophyServe())
+        let report = Coach.ruleBased(badTrophyServe(), hand: .right)
         XCTAssertEqual(report.source, .rules)
         XCTAssertFalse(report.improvements.isEmpty)
         XCTAssertLessThanOrEqual(report.improvements.count, 3)
@@ -155,7 +155,7 @@ final class CoachTests: XCTestCase {
         let prompt = Coach.prompt(badTrophyServe(), hand: .right, hasImages: true)
         XCTAssertTrue(prompt.contains("[hit-elbow-bend]"))
         XCTAssertTrue(prompt.contains("target 70–115°"))
-        XCTAssertTrue(prompt.contains("first image is the trophy"))
+        XCTAssertTrue(prompt.contains("The images show the serve in order: trophy position, contact."))
         XCTAssertTrue(prompt.contains("Suggested drills"))
     }
 
@@ -174,7 +174,7 @@ final class CoachTests: XCTestCase {
         {"title":"C","why":"b","how":"c","drill":"d"}],"next_session_focus":"Elbow height"}
         ```
         """
-        let report = try XCTUnwrap(Coach.parse(reply, result: badTrophyServe(), modelName: "Test"))
+        let report = try XCTUnwrap(Coach.parse(reply, result: badTrophyServe(), hand: .right, modelName: "Test"))
         XCTAssertEqual(report.source, .onDeviceAI)
         XCTAssertEqual(report.measurementReview.map(\.checkId), ["knee-bend"])
         XCTAssertEqual(report.distrustedChecks, ["knee-bend"])
@@ -187,15 +187,15 @@ final class CoachTests: XCTestCase {
         {"summary":"Nice work overall on this serve.","measurement_review":[{"check_id":"[knee-bend]","trustworthy":false,"note":"Low confidence."}],
         "strengths":[],"improvements":[{"title":"Elbow","why":"","how":"Cue: Make an L.","drill":""}],"next_session_focus":""}
         """
-        let report = try XCTUnwrap(Coach.parse(reply, result: badTrophyServe(), modelName: "Test"))
+        let report = try XCTUnwrap(Coach.parse(reply, result: badTrophyServe(), hand: .right, modelName: "Test"))
         XCTAssertEqual(report.improvements.count, 1)
         XCTAssertEqual(report.improvements.first?.how, "Make an L.")
-        XCTAssertEqual(report.improvements.first?.drill, Coach.ruleBased(badTrophyServe()).improvements.first?.drill)
+        XCTAssertEqual(report.improvements.first?.drill, Coach.ruleBased(badTrophyServe(), hand: .right).improvements.first?.drill)
         XCTAssertEqual(report.distrustedChecks, ["knee-bend"])
     }
 
     func testRejectsJsonStuffedIntoSummary() {
-        XCTAssertNil(Coach.parse(#"{"summary":"{\"Player\": \"x\"}","improvements":[]}"#, result: badTrophyServe(), modelName: "Test"))
+        XCTAssertNil(Coach.parse(#"{"summary":"{\"Player\": \"x\"}","improvements":[]}"#, result: badTrophyServe(), hand: .right, modelName: "Test"))
     }
 
     func testConfidenceLabelsUseTheCheckedJoints() {
@@ -205,37 +205,53 @@ final class CoachTests: XCTestCase {
         XCTAssertEqual(Coach.confidenceLabel(pose, checkId: "hit-elbow-bend", hand: .right), "high")
     }
 
+    func testLowConfidenceChecksAreAlwaysFlagged() throws {
+        var trophy = makePose([.leftElbow: (340, 80), .leftWrist: (350, 10), .rightElbow: (250, 230), .rightWrist: (240, 300)])
+        for j in [Joint.leftKnee, .rightKnee] { trophy.joints[j]?.confidence = 0.35 }
+        let serve = ServeAnalyzer.analyze([Frame(time: 0, pose: trophy), Frame(time: 1, pose: goodContact)], hand: .right)
+        XCTAssertEqual(Coach.ruleBased(serve, hand: .right).distrustedChecks, ["knee-bend"])
+
+        // The model calls it trustworthy, misspells another id and repeats the drill in the cue.
+        let reply = """
+        {"summary":"Work on the elbow and knees.","measurement_review":[{"check_id":"knee_bend","trustworthy":true,"note":"Fine."},
+        {"check_id":"hit_elbow_bend","trustworthy":false,"note":"Arm hidden."}],"strengths":["Good toss"],
+        "improvements":[{"title":"Elbow","why":"Power.","how":"Make an L. Drill: hold it for 3 seconds.","drill":"Hold the L."}],"next_session_focus":"Elbow"}
+        """
+        let report = try XCTUnwrap(Coach.parse(reply, result: serve, hand: .right, modelName: "Test"))
+        XCTAssertEqual(report.distrustedChecks, ["knee-bend", "hit-elbow-bend"])
+        XCTAssertEqual(report.improvements.first?.how, "Make an L.")
+    }
+
     func testRejectsGarbage() {
-        XCTAssertNil(Coach.parse("I can't help with that.", result: badTrophyServe(), modelName: "Test"))
-        XCTAssertNil(Coach.parse("{\"summary\": \"\", \"improvements\": []}", result: badTrophyServe(), modelName: "Test"))
+        XCTAssertNil(Coach.parse("I can't help with that.", result: badTrophyServe(), hand: .right, modelName: "Test"))
+        XCTAssertNil(Coach.parse("{\"summary\": \"\", \"improvements\": []}", result: badTrophyServe(), hand: .right, modelName: "Test"))
     }
 }
 
 final class HistoryTests: XCTestCase {
-    private func record(score: Int?, fix: String? = nil) -> ServeRecord {
-        let result = ServeResult(trophyFrame: nil, contactFrame: nil, trophy: nil, contact: nil)
-        let r = ServeRecord(result: result, hand: .right)
-        // Rebuild with explicit values via JSON so tests don't depend on pose fixtures.
+    private func record(score: Int?, fix: String? = nil) -> PracticeRecord {
         let json = """
-        {"id":"\(r.id.uuidString)","date":"2026-01-01T00:00:00Z","score":\(score.map(String.init) ?? "null"),
-        "trophyScore":null,"contactScore":null,"topFix":\(fix.map { "\"\($0)\"" } ?? "null"),"handedness":"right"}
+        {"id":"\(UUID().uuidString)","date":"2026-01-01T00:00:00Z","kind":"forehand","score":\(score.map(String.init) ?? "null"),
+        "detail":"","topFix":\(fix.map { "\"\($0)\"" } ?? "null"),"handedness":"right"}
         """
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try! decoder.decode(ServeRecord.self, from: Data(json.utf8))
+        return try! decoder.decode(PracticeRecord.self, from: Data(json.utf8))
     }
 
     func testStorePersistsNewestFirst() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("history.json")
         let store = HistoryStore(url: url)
-        let first = ServeRecord(result: ServeAnalyzer.analyze([Frame(time: 0, pose: goodTrophy)], hand: .right), hand: .right)
-        let second = ServeRecord(result: ServeAnalyzer.analyze([Frame(time: 1, pose: goodContact)], hand: .right), hand: .right)
+        let serve = ServeAnalyzer.analyze([Frame(time: 0, pose: goodTrophy), Frame(time: 1, pose: goodContact)], hand: .right)
+        let first = PracticeRecord(stroke: serve.stroke, hand: .right)
+        let second = PracticeRecord(match: MatchAnalyzer.analyze([], hand: .right), hand: .right)
         try store.add(first)
         try store.add(second)
         let reloaded = HistoryStore(url: url).records
         XCTAssertEqual(reloaded.map(\.id), [second.id, first.id])
-        XCTAssertEqual(reloaded.last?.score, first.score)
-        XCTAssertNotNil(reloaded.last?.score)
+        XCTAssertEqual(reloaded.last?.kind, "serve")
+        XCTAssertEqual(reloaded.last?.detail, "Trophy position 100 · Contact 100")
+        XCTAssertEqual(reloaded.first?.title, "Match")
         try store.clear()
         XCTAssertTrue(HistoryStore(url: url).records.isEmpty)
     }

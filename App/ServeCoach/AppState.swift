@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import ServeAnalysis
 
-/// App-wide state shared by every tab: serve history, AI models and coaching results.
+/// App-wide state shared by every tab: practice history, AI models and coaching results.
 @MainActor
 @Observable
 final class AppState {
@@ -10,8 +10,8 @@ final class AppState {
     @ObservationIgnored private let coach: AICoach
     @ObservationIgnored private let historyStore: HistoryStore
 
-    private(set) var history: [ServeRecord] = []
-    /// Coaching reports already produced, by serve id, so reopening a review doesn't re-run the model.
+    private(set) var history: [PracticeRecord] = []
+    /// Coaching reports already produced, by stroke or match id, so reopening a review doesn't re-run the model.
     private(set) var reports: [UUID: CoachReport] = [:]
     private(set) var coaching: Set<UUID> = []
 
@@ -22,9 +22,17 @@ final class AppState {
         history = historyStore.records
     }
 
-    /// Save a finished serve to history.
-    func record(_ serve: ReviewedServe, hand: Handedness) {
-        let record = ServeRecord(result: serve.result, hand: hand)
+    /// Save a finished stroke to history.
+    func record(_ stroke: ReviewedStroke, hand: Handedness) {
+        save(PracticeRecord(stroke: stroke.result, hand: hand))
+    }
+
+    /// Save an analysed match to history.
+    func record(_ match: AnalyzedMatch, hand: Handedness) {
+        save(PracticeRecord(match: match.report, hand: hand))
+    }
+
+    private func save(_ record: PracticeRecord) {
         try? historyStore.add(record)
         history.insert(record, at: 0)
     }
@@ -37,12 +45,20 @@ final class AppState {
     /// Which engine "How do I improve?" will use right now.
     var coachEngine: AICoach.EngineKind { coach.engine }
 
-    func requestCoaching(_ serve: ReviewedServe, hand: Handedness) {
-        guard !coaching.contains(serve.id) else { return }
-        coaching.insert(serve.id)
+    func requestCoaching(_ stroke: ReviewedStroke, hand: Handedness) {
+        coachInBackground(stroke.id) { await $0.review(stroke, hand: hand) }
+    }
+
+    func requestCoaching(_ match: AnalyzedMatch, hand: Handedness) {
+        coachInBackground(match.id) { await $0.review(match.report, hand: hand) }
+    }
+
+    private func coachInBackground(_ id: UUID, _ work: @escaping (AICoach) async -> CoachReport) {
+        guard !coaching.contains(id) else { return }
+        coaching.insert(id)
         Task {
-            reports[serve.id] = await coach.review(serve, hand: hand)
-            coaching.remove(serve.id)
+            reports[id] = await work(coach)
+            coaching.remove(id)
         }
     }
 

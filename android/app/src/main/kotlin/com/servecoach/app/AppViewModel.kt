@@ -3,6 +3,7 @@ package com.servecoach.app
 import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -13,8 +14,11 @@ import com.servecoach.analysis.CoachModel
 import com.servecoach.analysis.CoachReport
 import com.servecoach.analysis.Handedness
 import com.servecoach.analysis.HistoryStore
-import com.servecoach.analysis.ServeRecord
-import com.servecoach.analysis.ServeResult
+import com.servecoach.analysis.MatchReport
+import com.servecoach.analysis.Phase
+import com.servecoach.analysis.PracticeRecord
+import com.servecoach.analysis.StrokeResult
+import com.servecoach.analysis.StrokeType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -22,13 +26,23 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
-/** A completed serve's key frames, kept together for review and AI coaching. */
-data class ReviewedServe(
-    val result: ServeResult,
-    val trophyImage: Bitmap?,
-    val contactImage: Bitmap?,
-    val trophySample: PoseSample?,
-    val contactSample: PoseSample?,
+/** A completed stroke with stills of its key moments, kept together for review and AI coaching. */
+data class ReviewedStroke(
+    val result: StrokeResult,
+    val images: Map<Phase, Bitmap>,
+    val samples: Map<Phase, PoseSample>,
+    val id: String = UUID.randomUUID().toString(),
+)
+
+/**
+ * An analysed match video. Stills for each stroke are pulled from the video only when a
+ * stroke is opened, so long videos don't fill memory.
+ */
+data class AnalyzedMatch(
+    val report: MatchReport,
+    val video: Uri,
+    /** Pose at each stroke's key moments, for drawing the skeleton. */
+    val samples: Map<Double, PoseSample>,
     val id: String = UUID.randomUUID().toString(),
 )
 
@@ -48,9 +62,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var spokenCues by mutableStateOf(prefs.getBoolean("spokenCues", true))
         private set
+    /** The stroke being practised on the Live tab; null means work it out from each swing. */
+    var practiceStroke by mutableStateOf(prefs.getString("stroke", StrokeType.SERVE.name)?.let { name ->
+        StrokeType.entries.firstOrNull { it.name == name }
+    })
+        private set
     var preferredModelId by mutableStateOf(prefs.getString("model", null))
         private set
-    var history by mutableStateOf(emptyList<ServeRecord>())
+    var history by mutableStateOf(emptyList<PracticeRecord>())
         private set
 
     /** Bumped when a model is installed or deleted so the UI re-reads install state. */
@@ -75,6 +94,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun updateSpokenCues(value: Boolean) {
         spokenCues = value
         prefs.edit().putBoolean("spokenCues", value).apply()
+    }
+
+    fun updatePracticeStroke(value: StrokeType?) {
+        practiceStroke = value
+        prefs.edit().putString("stroke", value?.name ?: "ANY").apply()
     }
 
     fun selectModel(model: CoachModel) {
@@ -118,9 +142,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         modelsVersion++
     }
 
-    /** Save a finished serve to history. */
-    fun record(serve: ReviewedServe) {
-        val record = ServeRecord.of(serve.result, hand)
+    /** Save a finished stroke to history. */
+    fun record(stroke: ReviewedStroke) = save(PracticeRecord.of(stroke.result, hand))
+
+    /** Save an analysed match to history. */
+    fun record(match: AnalyzedMatch) = save(PracticeRecord.of(match.report, hand))
+
+    private fun save(record: PracticeRecord) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { historyStore.add(record) }
             history = listOf(record) + history
@@ -134,14 +162,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun requestCoaching(serve: ReviewedServe) {
-        if (coaching[serve.id] == true) return
-        coaching[serve.id] = true
+    fun requestCoaching(stroke: ReviewedStroke) = coachInBackground(stroke.id) { coach.review(stroke, hand, preferredModel) }
+
+    fun requestCoaching(match: AnalyzedMatch) = coachInBackground(match.id) { coach.review(match.report, hand, preferredModel) }
+
+    private fun coachInBackground(id: String, work: suspend () -> CoachReport) {
+        if (coaching[id] == true) return
+        coaching[id] = true
         viewModelScope.launch {
             try {
-                reports[serve.id] = coach.review(serve, hand, preferredModel)
+                reports[id] = work()
             } finally {
-                coaching.remove(serve.id)
+                coaching.remove(id)
             }
         }
     }

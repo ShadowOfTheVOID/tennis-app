@@ -36,28 +36,43 @@ import java.util.Date
 
 @Composable
 fun HistoryScreen(vm: AppViewModel) {
-    val records = vm.history
+    var filter by remember { mutableStateOf<String?>(null) }
+    val kinds = vm.history.map { it.kind }.distinct()
+    val records = vm.history.filter { filter == null || it.kind == filter }
     var confirmClear by remember { mutableStateOf(false) }
-    if (records.isEmpty()) {
+    if (vm.history.isEmpty()) {
         Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("No serves yet", style = MaterialTheme.typography.titleLarge)
-            Text("Serves you record live or analyze from video show up here so you can track progress.")
+            Text("Nothing yet", style = MaterialTheme.typography.titleLarge)
+            Text("Strokes you record live and videos you analyze show up here so you can track progress.")
         }
         return
     }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            Card(Modifier.fillMaxWidth().padding(top = 16.dp)) {
+            androidx.compose.foundation.lazy.LazyRow(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(listOf<String?>(null) + kinds) { kind ->
+                    androidx.compose.material3.FilterChip(
+                        selected = filter == kind,
+                        onClick = { filter = kind },
+                        label = { Text(kind?.let { k -> vm.history.first { it.kind == k }.title } ?: "All") },
+                    )
+                }
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     val scores = records.mapNotNull { it.score }
-                    Text("${records.size} serves", style = MaterialTheme.typography.titleMedium)
+                    val noun = filter?.let { k -> vm.history.first { it.kind == k }.title.lowercase() + if (k == "match") "es" else "s" } ?: "sessions"
+                    Text("${records.size} $noun", style = MaterialTheme.typography.titleMedium)
                     if (scores.isNotEmpty()) Text("Average score: ${scores.take(10).average().toInt()} (last ${minOf(10, scores.size)})")
-                    HistoryStats.trend(records)?.let { t ->
+                    // A trend only means something within one kind of stroke.
+                    HistoryStats.trend(records).takeIf { filter != null }?.let { t ->
                         Text(
                             when {
-                                t > 0 -> "Trending up: +$t points over your last 5 serves"
-                                t < 0 -> "Trending down: $t points over your last 5 serves"
-                                else -> "Holding steady over your last 5 serves"
+                                t > 0 -> "Trending up: +$t points over your last 5"
+                                t < 0 -> "Trending down: $t points over your last 5"
+                                else -> "Holding steady over your last 5"
                             },
                             color = if (t >= 0) Status_GOOD else Status_WARN,
                         )
@@ -70,8 +85,9 @@ fun HistoryScreen(vm: AppViewModel) {
             Card(Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(r.date)), style = MaterialTheme.typography.labelLarge)
-                        Text("Trophy ${r.trophyScore ?: "—"} · Contact ${r.contactScore ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                        Text(r.title, style = MaterialTheme.typography.titleSmall)
+                        Text(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(r.date)), style = MaterialTheme.typography.labelMedium)
+                        Text(r.detail, style = MaterialTheme.typography.bodySmall)
                         r.topFix?.let { Text("Fix: $it", style = MaterialTheme.typography.bodySmall) }
                     }
                     ScoreBadge(r.score)
@@ -86,7 +102,7 @@ fun HistoryScreen(vm: AppViewModel) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Clear all history?") },
-            text = { Text("This deletes every saved serve from this phone.") },
+            text = { Text("This deletes every saved stroke and match from this phone.") },
             confirmButton = { TextButton(onClick = { vm.clearHistory(); confirmClear = false }) { Text("Clear") } },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
         )
@@ -102,7 +118,7 @@ fun SettingsScreen(vm: AppViewModel) {
         Text("Player", style = MaterialTheme.typography.titleMedium)
         HandPicker(vm.hand, vm::updateHand, Modifier.fillMaxWidth())
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Spoken tips after each serve", Modifier.weight(1f))
+            Text("Spoken tips after each stroke", Modifier.weight(1f))
             Switch(vm.spokenCues, vm::updateSpokenCues)
         }
 

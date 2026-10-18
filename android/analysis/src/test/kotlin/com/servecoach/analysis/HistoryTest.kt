@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 
 class HistoryTest {
     private fun record(score: Int?, fix: String? = null) =
-        ServeRecord(score = score, trophyScore = null, contactScore = null, topFix = fix, handedness = "right")
+        PracticeRecord(kind = "forehand", score = score, detail = "", topFix = fix, handedness = "right")
 
     @Test fun storePersistsNewestFirst() {
         val file = Files.createTempDirectory("history").resolve("sub/history.json").toFile()
@@ -18,6 +18,9 @@ class HistoryTest {
         store.add(first)
         store.add(second)
         assertEquals(listOf(second.id, first.id), HistoryStore(file).records.map { it.id })
+        val match = PracticeRecord.of(MatchAnalyzer.analyze(emptyList(), Handedness.RIGHT), Handedness.RIGHT)
+        assertEquals("Match", match.title)
+        assertEquals("forehand", first.kind)
         store.clear()
         assertTrue(HistoryStore(file).records.isEmpty())
     }

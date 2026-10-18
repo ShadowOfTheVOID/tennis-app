@@ -63,6 +63,8 @@ dependencies {
 
     // On-device body pose (bundled model, no download).
     implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
+    // Faster model for long match videos.
+    implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
     // On-device language models for the AI coach.
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
 

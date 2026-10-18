@@ -16,6 +16,7 @@ import com.servecoach.analysis.Coach
 import com.servecoach.analysis.CoachModel
 import com.servecoach.analysis.CoachReport
 import com.servecoach.analysis.Handedness
+import com.servecoach.analysis.MatchReport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -99,7 +100,7 @@ class ModelManager(private val context: Context) {
 }
 
 /**
- * Turns a serve into coaching with an on-device language model through LiteRT-LM.
+ * Turns a stroke or a match into coaching with an on-device language model through LiteRT-LM.
  * No API key and no network: the model file lives on the phone.
  */
 class AiCoach(private val context: Context, private val models: ModelManager) {
@@ -112,28 +113,41 @@ class AiCoach(private val context: Context, private val models: ModelManager) {
         (listOfNotNull(preferred) + CoachModel.ALL).firstOrNull { models.isInstalled(it) }
 
     /**
-     * Ask the model for coaching. Falls back to the rule-based coach if no model is installed or
-     * the model's answer can't be used, so this always returns a report.
+     * Ask the model to coach one stroke. Falls back to the rule-based coach if no model is installed
+     * or the model's answer can't be used, so this always returns a report.
      */
-    suspend fun review(serve: ReviewedServe, hand: Handedness, preferred: CoachModel?): CoachReport = withContext(Dispatchers.Default) {
-        val rules = Coach.ruleBased(serve.result)
+    suspend fun review(stroke: ReviewedStroke, hand: Handedness, preferred: CoachModel?): CoachReport = withContext(Dispatchers.Default) {
+        val rules = Coach.ruleBased(stroke.result, hand)
         val model = activeModel(preferred) ?: return@withContext rules
         mutex.withLock {
             val engine = engineFor(model)
-            val images = if (model.vision) listOfNotNull(serve.trophyImage, serve.contactImage).mapIndexed { i, bmp -> saveJpeg(bmp, "frame$i.jpg") } else emptyList()
+            val images = if (!model.vision) emptyList() else stroke.result.keyFrames.mapNotNull { stroke.images[it.phase] }
+                .mapIndexed { i, bmp -> saveJpeg(bmp, "frame$i.jpg") }
             val contents = images.map { Content.ImageFile(it.absolutePath) } +
-                Content.Text(Coach.prompt(serve.result, hand, hasImages = images.isNotEmpty()))
-
-            val reply = runCatching { ask(engine, contents, constrained = true) }
-                .recoverCatching { ask(engine, contents, constrained = false) }
-                .getOrNull()
-            reply?.let { Coach.parse(it, serve.result, model.name) } ?: rules
+                Content.Text(Coach.prompt(stroke.result, hand, hasImages = images.isNotEmpty()))
+            ask(engine, Coach.instructions, contents)?.let { Coach.parse(it, stroke.result, hand, model.name) } ?: rules
         }
     }
 
-    private fun ask(engine: Engine, contents: List<Content>, constrained: Boolean): String {
+    /** Ask the model to coach a whole match, from its stroke summaries and footwork. Always returns a report. */
+    suspend fun review(match: MatchReport, hand: Handedness, preferred: CoachModel?): CoachReport = withContext(Dispatchers.Default) {
+        val rules = Coach.ruleBased(match)
+        val model = activeModel(preferred) ?: return@withContext rules
+        mutex.withLock {
+            val reply = ask(engineFor(model), Coach.matchInstructions, listOf(Content.Text(Coach.matchPrompt(match, hand))))
+            reply?.let { Coach.parse(it, match, model.name) } ?: rules
+        }
+    }
+
+    /** Constrained JSON first; if the model or runtime rejects that, a plain request. Null if both fail. */
+    private fun ask(engine: Engine, system: String, contents: List<Content>): String? =
+        runCatching { ask(engine, system, contents, constrained = true) }
+            .recoverCatching { ask(engine, system, contents, constrained = false) }
+            .getOrNull()
+
+    private fun ask(engine: Engine, system: String, contents: List<Content>, constrained: Boolean): String {
         val config = ConversationConfig(
-            systemInstruction = Contents.of(Coach.instructions),
+            systemInstruction = Contents.of(system),
             samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.4),
             enableResponseFormat = constrained,
         )

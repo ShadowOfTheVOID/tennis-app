@@ -47,53 +47,59 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.servecoach.analysis.CoachReport
 import com.servecoach.analysis.CoachSource
-import com.servecoach.analysis.ServeResult
 
-/** A serve's key frames and checks, plus the AI coach's improvement plan. */
+/** A stroke's key frames and checks, plus the AI coach's improvement plan. */
 @Composable
-fun ReviewScreen(vm: AppViewModel, serve: ReviewedServe) {
-    val report = vm.reports[serve.id]
+fun ReviewScreen(vm: AppViewModel, stroke: ReviewedStroke) {
+    val report = vm.reports[stroke.id]
     val distrusted = report?.distrustedChecks ?: emptySet()
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        Text(stroke.result.title, style = MaterialTheme.typography.headlineSmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            KeyFrame("Trophy", serve.trophyImage, serve.trophySample, Modifier.weight(1f))
-            KeyFrame("Contact", serve.contactImage, serve.contactSample, Modifier.weight(1f))
-        }
-
-        if (report != null) {
-            CoachReportCard(report, serve.result)
-        } else {
-            val busy = vm.coaching[serve.id] == true
-            val model = vm.activeModel
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = { vm.requestCoaching(serve) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Filled.AutoAwesome, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (busy) "Coach is reviewing your serve…" else "How do I improve?")
-                }
-                if (busy) {
-                    Spacer(Modifier.padding(4.dp))
-                    CircularProgressIndicator()
-                    Text("This takes 1–2 minutes on most phones.", style = MaterialTheme.typography.bodySmall)
-                }
-                Text(
-                    when {
-                        model == null -> "Using the built-in coach. Download an AI model in Settings for personalised, offline AI coaching."
-                        model.vision -> "${model.name} runs on your phone and checks the measurements against your photos. Nothing is uploaded."
-                        else -> "${model.name} runs on your phone and double-checks the measurements. Nothing is uploaded."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
+            stroke.result.keyFrames.forEach { key ->
+                KeyFrame(key.phase.title, stroke.images[key.phase], stroke.samples[key.phase], Modifier.weight(1f))
             }
         }
 
-        serve.result.trophy?.let { EvaluationCard(it, distrusted) }
-        serve.result.contact?.let { EvaluationCard(it, distrusted) }
+        if (report != null) {
+            CoachReportCard(report, stroke.result.score, stroke.result.checks.associate { it.id to it.label })
+        } else {
+            CoachButton(vm, stroke.id, onClick = { vm.requestCoaching(stroke) }, photos = true)
+        }
+
+        stroke.result.evaluations.forEach { EvaluationCard(it, distrusted) }
+    }
+}
+
+/** "How do I improve?" with progress and a note on which coach will answer. */
+@Composable
+fun CoachButton(vm: AppViewModel, id: String, onClick: () -> Unit, photos: Boolean) {
+    val busy = vm.coaching[id] == true
+    val model = vm.activeModel
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = onClick, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.AutoAwesome, null)
+            Spacer(Modifier.width(6.dp))
+            Text(if (busy) "Coach is reviewing…" else "How do I improve?")
+        }
+        if (busy) {
+            Spacer(Modifier.padding(4.dp))
+            CircularProgressIndicator()
+            if (model != null) Text("This takes 1–2 minutes on most phones.", style = MaterialTheme.typography.bodySmall)
+        }
+        Text(
+            when {
+                model == null -> "Using the built-in coach. Download an AI model in Settings for personalised, offline AI coaching."
+                model.vision && photos -> "${model.name} runs on your phone and checks the measurements against your photos. Nothing is uploaded."
+                else -> "${model.name} runs on your phone and double-checks the analysis. Nothing is uploaded."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -113,8 +119,7 @@ private fun KeyFrame(title: String, image: Bitmap?, sample: PoseSample?, modifie
 }
 
 @Composable
-fun CoachReportCard(report: CoachReport, serve: ServeResult) {
-    val labels = serve.checks.associate { it.id to it.label }
+fun CoachReportCard(report: CoachReport, score: Int?, labels: Map<String, String>) {
     var showReview by remember { mutableStateOf(false) }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -126,7 +131,7 @@ fun CoachReportCard(report: CoachReport, serve: ServeResult) {
                     Text(if (ai) "AI coach" else "Coach", style = MaterialTheme.typography.titleMedium)
                     report.modelName?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
-                ScoreBadge(serve.score)
+                ScoreBadge(score)
             }
             Text(report.summary)
 
