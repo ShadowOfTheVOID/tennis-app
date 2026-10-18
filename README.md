@@ -28,6 +28,11 @@ It works on an **iPhone 11 Pro Max** and on most 64-bit Android phones.
   - **toss consistency** over the serves in a match,
   - **rallies** and roughly how many shots each, from the ball changing direction,
   - the ball ringed in yellow on the replay and in shared clips.
+- **Shot placement** (match videos): tap the four corners of the singles court on a frame of the
+  video. The app then maps each bounce it sees onto the court and shows:
+  - a court map of where your shots landed (filled dots in, hollow dots out),
+  - how many were in, long or wide,
+  - depth: short (inside the service line), middle, or deep (the last 3 m), with a tip.
 - **AI coach** ("How do I improve?"), for one stroke or a whole match:
   - double-checks the measurements and flags any it doesn't trust (anything measured from joints the
     tracker couldn't see clearly is always flagged),
@@ -149,7 +154,7 @@ usable coaching, so it isn't offered.
 
 The posture checks, stroke detection, match analysis, coaching prompts, JSON schema, answer parsing,
 rule-based coach and history are implemented twice, once per language, and kept in sync. Both have the
-same 51 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
+same 55 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
 matches were checked to be byte-for-byte identical on both platforms.
 
 ## Project layout
@@ -213,6 +218,9 @@ cd android && ./gradlew :analysis:test  # Kotlin module
 - Ball tracking is approximate. A fast ball blurs into a faint streak and is often missed, so it works
   best for the toss and in good light with the ball against a darker background. A yellow-green shirt
   or a moving yellow object can confuse it. It runs on videos, not in live mode.
+- Shot placement depends on that ball tracking. Bounces on the far side of the court are small in
+  the frame and are often missed, so treat the in/out and depth numbers as a rough guide, not line
+  calls. The court is marked by hand; it isn't detected automatically.
 - In match mode, stroke types are detected from body position and can occasionally be wrong.
 - Footwork numbers are estimates: a split step is a small hop seen in your feet, and movement toward or
   away from the camera isn't seen.

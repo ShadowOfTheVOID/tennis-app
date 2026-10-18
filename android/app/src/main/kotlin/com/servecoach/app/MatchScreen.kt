@@ -89,6 +89,7 @@ fun MatchScreen(vm: AppViewModel, match: AnalyzedMatch, onReview: (ReviewedStrok
         }
 
         item { BallCard(match, vm.hand) }
+        item { PlacementCard(vm, match) }
 
         item {
             val coachReport = vm.reports[match.id]

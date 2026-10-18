@@ -109,6 +109,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Coaching reports already produced, by serve id, so reopening a review doesn't re-run the model. */
     val reports = mutableStateMapOf<String, CoachReport>()
+    /** Court corners marked on each match video (image fractions), by match id. */
+    val courtTaps = mutableStateMapOf<String, List<Pair<Double, Double>>>()
     val coaching = mutableStateMapOf<String, Boolean>()
 
     init {

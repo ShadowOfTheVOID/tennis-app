@@ -53,6 +53,7 @@ struct MatchView: View {
             }
 
             BallSection(match: match, hand: hand)
+            PlacementSection(match: match)
 
             Section {
                 if let coach = app.reports[match.id] {
