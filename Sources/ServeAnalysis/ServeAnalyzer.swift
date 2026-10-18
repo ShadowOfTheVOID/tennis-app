@@ -2,6 +2,14 @@ import Foundation
 
 public enum Phase: String, Sendable {
     case ready, trophy, contact
+
+    public var title: String {
+        switch self {
+        case .ready: "Ready"
+        case .trophy: "Trophy position"
+        case .contact: "Contact"
+        }
+    }
 }
 
 public enum Status: String, Sendable {

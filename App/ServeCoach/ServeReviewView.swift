@@ -16,9 +16,10 @@ struct ServeReviewView: View {
     let serve: ReviewedServe
     let hand: Handedness
 
-    @State private var report: CoachReport?
-    @State private var error: String?
-    @State private var loading = false
+    @Environment(AppState.self) private var app
+
+    private var report: CoachReport? { app.reports[serve.id] }
+    private var loading: Bool { app.coaching.contains(serve.id) }
 
     var body: some View {
         ScrollView {
@@ -30,8 +31,9 @@ struct ServeReviewView: View {
 
                 aiSection
 
-                if let trophy = serve.result.trophy { EvaluationCard(evaluation: trophy) }
-                if let contact = serve.result.contact { EvaluationCard(evaluation: contact) }
+                let distrusted = report?.distrustedChecks ?? []
+                if let trophy = serve.result.trophy { EvaluationCard(evaluation: trophy, distrusted: distrusted) }
+                if let contact = serve.result.contact { EvaluationCard(evaluation: contact, distrusted: distrusted) }
             }
             .padding()
         }
@@ -62,19 +64,20 @@ struct ServeReviewView: View {
         } else {
             VStack(spacing: 8) {
                 Button {
-                    Task { await askCoach() }
+                    app.requestCoaching(serve, hand: hand)
                 } label: {
                     Label(loading ? "Coach is reviewing your serve…" : "How do I improve?", systemImage: "sparkles")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(loading)
-                if loading { ProgressView() }
-                if let error {
-                    Text(error).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center)
+                if loading {
+                    ProgressView()
+                    if case .downloaded = app.coachEngine {
+                        Text("This takes 1–2 minutes on most phones.").font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
-                Text(AICoach.unavailableReason.map { "\($0) You'll get the built-in coach instead." }
-                    ?? "Apple's on-device AI double-checks the measurements and builds your improvement plan. Nothing leaves your phone.")
+                Text(engineDescription)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -82,14 +85,16 @@ struct ServeReviewView: View {
         }
     }
 
-    private func askCoach() async {
-        loading = true
-        error = nil
-        defer { loading = false }
-        do {
-            report = try await AICoach.review(serve, hand: hand)
-        } catch {
-            self.error = error.localizedDescription
+    private var engineDescription: String {
+        switch app.coachEngine {
+        case .downloaded(let model) where model.vision:
+            "\(model.name) runs on your phone and checks the measurements against your photos. Nothing is uploaded."
+        case .downloaded(let model):
+            "\(model.name) runs on your phone and double-checks the measurements. Nothing is uploaded."
+        case .appleIntelligence:
+            "Apple Intelligence double-checks the measurements on your phone. Download Gemma 4 in Settings to also check your photos."
+        case .rules:
+            "Using the built-in coach. Download the free AI model in Settings for personalised, offline AI coaching."
         }
     }
 }
@@ -99,15 +104,17 @@ struct CoachReportView: View {
     let serve: ServeResult
 
     private var labels: [String: String] {
-        let checks = (serve.trophy?.checks ?? []) + (serve.contact?.checks ?? [])
-        return Dictionary(checks.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
+        Dictionary(serve.checks.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Label(report.fromAI ? "AI coach" : "Coach", systemImage: report.fromAI ? "sparkles" : "list.clipboard")
-                    .font(.headline)
+                let ai = report.source == .onDeviceAI
+                VStack(alignment: .leading) {
+                    Label(ai ? "AI coach" : "Coach", systemImage: ai ? "sparkles" : "list.clipboard").font(.headline)
+                    if let name = report.modelName { Text(name).font(.caption).foregroundStyle(.secondary) }
+                }
                 Spacer()
                 ScoreBadge(score: serve.score)
             }

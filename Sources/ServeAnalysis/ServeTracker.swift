@@ -14,10 +14,12 @@ public struct ServeResult: Sendable {
         return scores.reduce(0, +) / scores.count
     }
 
+    /// Every check from both key moments.
+    public var checks: [Check] { (trophy?.checks ?? []) + (contact?.checks ?? []) }
+
     /// The most useful single thing to work on: the first failing check, then the first warning.
     public var topTip: Check? {
-        let checks = (trophy?.checks ?? []) + (contact?.checks ?? [])
-        return checks.first { $0.status == .bad } ?? checks.first { $0.status == .warn }
+        checks.first { $0.status == .bad } ?? checks.first { $0.status == .warn }
     }
 }
 

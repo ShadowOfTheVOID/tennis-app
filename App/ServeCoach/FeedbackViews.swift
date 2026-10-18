@@ -21,16 +21,6 @@ extension Status {
     }
 }
 
-extension Phase {
-    var title: String {
-        switch self {
-        case .ready: "Ready"
-        case .trophy: "Trophy position"
-        case .contact: "Contact"
-        }
-    }
-}
-
 struct ScoreBadge: View {
     let score: Int?
 
@@ -50,6 +40,7 @@ struct ScoreBadge: View {
 
 struct CheckRow: View {
     let check: Check
+    var distrusted = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -62,6 +53,9 @@ struct CheckRow: View {
                     Spacer()
                     Text(check.value).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
+                if distrusted {
+                    Text("AI coach thinks this measurement may be wrong.").font(.caption).foregroundStyle(.orange)
+                }
                 if check.status != .good {
                     Text(check.tip).font(.caption).foregroundStyle(.secondary)
                 }
@@ -72,6 +66,7 @@ struct CheckRow: View {
 
 struct EvaluationCard: View {
     let evaluation: Evaluation
+    var distrusted: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -80,7 +75,7 @@ struct EvaluationCard: View {
                 Spacer()
                 ScoreBadge(score: evaluation.score)
             }
-            ForEach(evaluation.checks) { CheckRow(check: $0) }
+            ForEach(evaluation.checks) { CheckRow(check: $0, distrusted: distrusted.contains($0.id)) }
         }
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))

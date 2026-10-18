@@ -72,6 +72,7 @@ enum VideoAnalyzer {
 
 struct VideoAnalysisView: View {
     @AppStorage("handedness") private var hand: Handedness = .right
+    @Environment(AppState.self) private var app
     @State private var item: PhotosPickerItem?
     @State private var progress: Double?
     @State private var serve: ReviewedServe?
@@ -128,8 +129,12 @@ struct VideoAnalysisView: View {
         do {
             guard let video = try await item.loadTransferable(type: PickedVideo.self) else { return }
             defer { try? FileManager.default.removeItem(at: video.url) }
-            serve = try await VideoAnalyzer.analyze(url: video.url, hand: hand) { value in
+            let analyzed = try await VideoAnalyzer.analyze(url: video.url, hand: hand) { value in
                 Task { @MainActor in if progress != nil { progress = value } }
+            }
+            serve = analyzed
+            if analyzed.result.trophyFrame != nil || analyzed.result.contactFrame != nil {
+                app.record(analyzed, hand: hand)
             }
         } catch is CancellationError {
             return

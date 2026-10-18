@@ -29,6 +29,8 @@ struct CameraPreview: UIViewRepresentable {
 
 struct LiveCoachView: View {
     @AppStorage("handedness") private var hand: Handedness = .right
+    @AppStorage("spokenCues") private var spokenCues = true
+    @Environment(AppState.self) private var app
     @State private var camera = CameraModel()
     @State private var showLiveChecks = false
     @State private var reviewing: ReviewedServe?
@@ -57,6 +59,10 @@ struct LiveCoachView: View {
         .onAppear { camera.start(hand: hand) }
         .onDisappear { camera.stop() }
         .onChange(of: hand) { _, newHand in camera.setHand(newHand) }
+        .onChange(of: spokenCues, initial: true) { _, on in camera.spokenCues = on }
+        .onChange(of: camera.serveCount) {
+            if let serve = camera.lastServe { app.record(serve, hand: hand) }
+        }
         .sheet(item: $reviewing) { serve in
             NavigationStack {
                 ServeReviewView(serve: serve, hand: hand)
@@ -86,7 +92,7 @@ struct LiveCoachView: View {
 
             Spacer()
 
-            Toggle(isOn: $camera.spokenCues) { Image(systemName: "speaker.wave.2.fill") }
+            Toggle(isOn: $spokenCues) { Image(systemName: "speaker.wave.2.fill") }
                 .toggleStyle(.button)
 
             Button {

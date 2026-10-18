@@ -135,3 +135,116 @@ final class ServeAnalyzerTests: XCTestCase {
         XCTAssertNotNil(result?.contactFrame)
     }
 }
+
+final class CoachTests: XCTestCase {
+    private func badTrophyServe() -> ServeResult {
+        let pose = makePose([.leftElbow: (340, 80), .leftWrist: (350, 10), .rightElbow: (250, 230), .rightWrist: (240, 300)])
+        return ServeAnalyzer.analyze([Frame(time: 0, pose: pose), Frame(time: 1, pose: goodContact)], hand: .right)
+    }
+
+    func testRuleBasedPlanPrioritisesFailures() {
+        let report = Coach.ruleBased(badTrophyServe())
+        XCTAssertEqual(report.source, .rules)
+        XCTAssertFalse(report.improvements.isEmpty)
+        XCTAssertLessThanOrEqual(report.improvements.count, 3)
+        XCTAssertEqual(report.improvements.first?.title, "Hitting elbow ~90°")
+        XCTAssertFalse(report.strengths.isEmpty)
+    }
+
+    func testPromptListsChecksAndDrills() {
+        let prompt = Coach.prompt(badTrophyServe(), hand: .right, hasImages: true)
+        XCTAssertTrue(prompt.contains("[hit-elbow-bend]"))
+        XCTAssertTrue(prompt.contains("target 70–115°"))
+        XCTAssertTrue(prompt.contains("first image is the trophy"))
+        XCTAssertTrue(prompt.contains("Suggested drills"))
+    }
+
+    func testSchemaIsValidJSON() throws {
+        XCTAssertNoThrow(try JSONSerialization.jsonObject(with: Data(Coach.schema.utf8)))
+    }
+
+    func testParsesModelReplyAndDropsUnknownChecks() throws {
+        let reply = """
+        Here you go:
+        ```json
+        {"summary":"Good base.","measurement_review":[{"check_id":"id knee-bend","trustworthy":false,"note":"Legs blurry."},
+        {"check_id":"made-up","trustworthy":true,"note":"x"}],"strengths":["Tall at contact"],
+        "improvements":[{"title":"Elbow up","why":"Power","how":"Lift the elbow","drill":"Mirror work"},
+        {"title":"A","why":"b","how":"c","drill":"d"},{"title":"B","why":"b","how":"c","drill":"d"},
+        {"title":"C","why":"b","how":"c","drill":"d"}],"next_session_focus":"Elbow height"}
+        ```
+        """
+        let report = try XCTUnwrap(Coach.parse(reply, result: badTrophyServe(), modelName: "Test"))
+        XCTAssertEqual(report.source, .onDeviceAI)
+        XCTAssertEqual(report.measurementReview.map(\.checkId), ["knee-bend"])
+        XCTAssertEqual(report.distrustedChecks, ["knee-bend"])
+        XCTAssertEqual(report.improvements.count, 3)
+        XCTAssertEqual(report.modelName, "Test")
+    }
+
+    func testFillsBlankFieldsFromThePlanAndStripsCuePrefix() throws {
+        let reply = """
+        {"summary":"Nice work overall on this serve.","measurement_review":[{"check_id":"[knee-bend]","trustworthy":false,"note":"Low confidence."}],
+        "strengths":[],"improvements":[{"title":"Elbow","why":"","how":"Cue: Make an L.","drill":""}],"next_session_focus":""}
+        """
+        let report = try XCTUnwrap(Coach.parse(reply, result: badTrophyServe(), modelName: "Test"))
+        XCTAssertEqual(report.improvements.count, 1)
+        XCTAssertEqual(report.improvements.first?.how, "Make an L.")
+        XCTAssertEqual(report.improvements.first?.drill, Coach.ruleBased(badTrophyServe()).improvements.first?.drill)
+        XCTAssertEqual(report.distrustedChecks, ["knee-bend"])
+    }
+
+    func testRejectsJsonStuffedIntoSummary() {
+        XCTAssertNil(Coach.parse(#"{"summary":"{\"Player\": \"x\"}","improvements":[]}"#, result: badTrophyServe(), modelName: "Test"))
+    }
+
+    func testConfidenceLabelsUseTheCheckedJoints() {
+        var pose = makePose()
+        pose.joints[.leftKnee]?.confidence = 0.35
+        XCTAssertEqual(Coach.confidenceLabel(pose, checkId: "knee-bend", hand: .right), "low")
+        XCTAssertEqual(Coach.confidenceLabel(pose, checkId: "hit-elbow-bend", hand: .right), "high")
+    }
+
+    func testRejectsGarbage() {
+        XCTAssertNil(Coach.parse("I can't help with that.", result: badTrophyServe(), modelName: "Test"))
+        XCTAssertNil(Coach.parse("{\"summary\": \"\", \"improvements\": []}", result: badTrophyServe(), modelName: "Test"))
+    }
+}
+
+final class HistoryTests: XCTestCase {
+    private func record(score: Int?, fix: String? = nil) -> ServeRecord {
+        let result = ServeResult(trophyFrame: nil, contactFrame: nil, trophy: nil, contact: nil)
+        let r = ServeRecord(result: result, hand: .right)
+        // Rebuild with explicit values via JSON so tests don't depend on pose fixtures.
+        let json = """
+        {"id":"\(r.id.uuidString)","date":"2026-01-01T00:00:00Z","score":\(score.map(String.init) ?? "null"),
+        "trophyScore":null,"contactScore":null,"topFix":\(fix.map { "\"\($0)\"" } ?? "null"),"handedness":"right"}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try! decoder.decode(ServeRecord.self, from: Data(json.utf8))
+    }
+
+    func testStorePersistsNewestFirst() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("history.json")
+        let store = HistoryStore(url: url)
+        let first = ServeRecord(result: ServeAnalyzer.analyze([Frame(time: 0, pose: goodTrophy)], hand: .right), hand: .right)
+        let second = ServeRecord(result: ServeAnalyzer.analyze([Frame(time: 1, pose: goodContact)], hand: .right), hand: .right)
+        try store.add(first)
+        try store.add(second)
+        let reloaded = HistoryStore(url: url).records
+        XCTAssertEqual(reloaded.map(\.id), [second.id, first.id])
+        XCTAssertEqual(reloaded.last?.score, first.score)
+        XCTAssertNotNil(reloaded.last?.score)
+        try store.clear()
+        XCTAssertTrue(HistoryStore(url: url).records.isEmpty)
+    }
+
+    func testTrendAndCommonFix() {
+        let records = [90, 90, 90, 90, 90, 70, 70, 70, 70, 70].map { record(score: $0, fix: "Knees loaded") }
+            + [record(score: nil, fix: "Hitting elbow ~90°")]
+        XCTAssertEqual(HistoryStats.trend(records), 20)
+        XCTAssertNil(HistoryStats.trend(Array(records.prefix(6))))
+        XCTAssertEqual(HistoryStats.mostCommonFix(records), "Knees loaded")
+    }
+}
