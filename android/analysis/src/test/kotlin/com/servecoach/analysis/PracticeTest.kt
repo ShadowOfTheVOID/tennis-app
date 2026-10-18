@@ -85,4 +85,17 @@ class PracticeTest {
         assertTrue(abs(assertNotNull(serve.tempo) - 0.6) < 1e-9)
         assertEquals(1.0, serve.direction)
     }
+
+    @Test fun shareClipTimelineAndCaptions() {
+        val frames = ShareClip.frames(listOf(0.0, 0.1, 0.2))
+        assertEquals(25 + 45, frames.size) // 0.2 s at quarter speed, 30 fps, plus a 1.5 s hold
+        assertEquals(listOf(0, 1, 2, 2), listOf(frames[0], frames[12], frames[24], frames.last()))
+        assertTrue(ShareClip.frames(emptyList()).isEmpty())
+
+        val stroke = StrokeAnalyzer.analyzeClip(sequence(groundstroke(), until = 2.0), StrokeType.FOREHAND, Handedness.RIGHT)!!
+        assertTrue(ShareClip.title(stroke).startsWith("Forehand · "))
+        val first = stroke.keyFrames.minOf { it.frame.time }
+        assertEquals(null, ShareClip.caption(stroke, first - 0.5))
+        assertTrue(assertNotNull(ShareClip.caption(stroke, stroke.frame(Phase.CONTACT)!!.time)).startsWith("Contact"))
+    }
 }

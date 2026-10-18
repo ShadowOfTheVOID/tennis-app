@@ -62,6 +62,7 @@ struct StrokeReviewView: View {
                 }
 
                 if stroke.replay.count >= 2 { ReplayView(frames: stroke.replay) }
+                ShareClipButton(stroke: stroke)
 
                 if let report {
                     CoachReportView(report: report, score: stroke.result.score, labels: labels)
@@ -105,6 +106,38 @@ struct StrokeReviewView: View {
             .aspectRatio(3 / 4, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             Text(title).font(.caption.weight(.semibold))
+        }
+    }
+}
+
+/// Exports the replay with the skeleton and scores drawn on, then offers the share sheet.
+struct ShareClipButton: View {
+    let stroke: ReviewedStroke
+    @State private var clip: URL?
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if let clip {
+                ShareLink(item: clip) { Label("Share clip", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }
+                    .buttonStyle(.bordered)
+            } else {
+                Button {
+                    busy = true
+                    error = nil
+                    Task {
+                        do { clip = try await Task.detached { try await ClipExporter.export(stroke) }.value }
+                        catch { self.error = "Couldn't make the clip: \(error.localizedDescription)" }
+                        busy = false
+                    }
+                } label: {
+                    Label(busy ? "Making clip…" : "Make a share clip", systemImage: "film").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(busy || (stroke.replay.isEmpty && stroke.images.isEmpty))
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
     }
 }

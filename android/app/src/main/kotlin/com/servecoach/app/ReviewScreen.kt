@@ -54,6 +54,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
+import androidx.compose.material.icons.filled.Share
 
 /** A stroke's key frames and checks, plus the AI coach's improvement plan. */
 @Composable
@@ -91,6 +93,7 @@ fun ReviewScreen(vm: AppViewModel, stroke: ReviewedStroke) {
         }
 
         if (stroke.replay.size >= 2) Replay(stroke.replay)
+        ShareClipButton(stroke)
 
         if (report != null) {
             CoachReportCard(report, stroke.result.score, stroke.result.checks.associate { it.id to it.label })
@@ -100,6 +103,34 @@ fun ReviewScreen(vm: AppViewModel, stroke: ReviewedStroke) {
 
         stroke.result.evaluations.forEach { EvaluationCard(it, distrusted) }
     }
+}
+
+/** Exports the replay with the skeleton and scores drawn on, then opens the share sheet. */
+@Composable
+private fun ShareClipButton(stroke: ReviewedStroke) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var busy by remember(stroke.id) { mutableStateOf(false) }
+    var error by remember(stroke.id) { mutableStateOf<String?>(null) }
+    androidx.compose.material3.OutlinedButton(
+        onClick = {
+            busy = true
+            error = null
+            scope.launch {
+                runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { ClipExporter.export(context, stroke) } }
+                    .onSuccess { ClipExporter.share(context, it) }
+                    .onFailure { error = "Couldn't make the clip: ${it.message}" }
+                busy = false
+            }
+        },
+        enabled = !busy && (stroke.replay.isNotEmpty() || stroke.images.isNotEmpty()),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Icon(Icons.Filled.Share, null)
+        Spacer(Modifier.width(6.dp))
+        Text(if (busy) "Making clip…" else "Share clip")
+    }
+    error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 }
 
 /** "How do I improve?" with progress and a note on which coach will answer. */

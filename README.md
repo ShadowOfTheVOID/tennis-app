@@ -34,6 +34,8 @@ It works on an **iPhone 11 Pro Max** and on most 64-bit Android phones.
     lined up at the hips and scaled to your size,
   - estimated **hand speed** at contact (your hand, not the racket head, which moves faster),
   - **serve rhythm**: the time from trophy position to contact.
+  - **share clip**: exports the replay as an MP4 at quarter speed, with your skeleton, the score
+    for each key moment and the main thing to work on drawn on, ready to send from the share sheet.
 - **Progress**: for each stroke, every check's weekly share graded good, as a small chart with the
   change over time; your serve rhythm consistency; and your fastest swings.
 - **Weekly practice plan**: a 7-day plan built from the three checks you've missed most in the last
@@ -141,7 +143,7 @@ usable coaching, so it isn't offered.
 
 The posture checks, stroke detection, match analysis, coaching prompts, JSON schema, answer parsing,
 rule-based coach and history are implemented twice, once per language, and kept in sync. Both have the
-same 45 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
+same 46 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
 matches were checked to be byte-for-byte identical on both platforms.
 
 ## Project layout

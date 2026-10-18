@@ -106,7 +106,7 @@ fun EvaluationCard(evaluation: Evaluation, distrusted: Set<String> = emptySet())
     }
 }
 
-private val BONES = listOf(
+internal val BONES = listOf(
     Joint.LEFT_SHOULDER to Joint.RIGHT_SHOULDER, Joint.LEFT_HIP to Joint.RIGHT_HIP,
     Joint.LEFT_SHOULDER to Joint.LEFT_HIP, Joint.RIGHT_SHOULDER to Joint.RIGHT_HIP,
     Joint.LEFT_SHOULDER to Joint.LEFT_ELBOW, Joint.LEFT_ELBOW to Joint.LEFT_WRIST,

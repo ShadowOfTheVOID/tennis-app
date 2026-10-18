@@ -88,4 +88,18 @@ final class PracticeTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(serve.tempo), 0.6, accuracy: 1e-9)
         XCTAssertEqual(serve.direction, 1)
     }
+
+    func testShareClipTimelineAndCaptions() throws {
+        let frames = ShareClip.frames([0, 0.1, 0.2])
+        XCTAssertEqual(frames.count, 25 + 45) // 0.2 s at quarter speed, 30 fps, plus a 1.5 s hold
+        XCTAssertEqual([frames[0], frames[12], frames[24], frames.last!], [0, 1, 2, 2])
+        XCTAssertTrue(ShareClip.frames([]).isEmpty)
+
+        let stroke = try XCTUnwrap(StrokeAnalyzer.analyzeClip(sequence(groundstroke(), until: 2), type: .forehand, hand: .right))
+        XCTAssertTrue(ShareClip.title(stroke).hasPrefix("Forehand · "))
+        let first = stroke.keyFrames.map(\.frame.time).min()!
+        XCTAssertNil(ShareClip.caption(stroke, time: first - 0.5))
+        let contact = try XCTUnwrap(stroke.keyFrames.first { $0.phase == .contact }).frame.time
+        XCTAssertTrue(try XCTUnwrap(ShareClip.caption(stroke, time: contact)).hasPrefix("Contact"))
+    }
 }

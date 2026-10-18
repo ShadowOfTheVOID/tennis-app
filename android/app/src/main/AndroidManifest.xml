@@ -33,6 +33,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Shares exported clips with other apps. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.clips"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/clip_paths" />
+        </provider>
+
         <!-- Exported so it reliably receives BOOT_COMPLETED; it only acts on that and its own alarm action. -->
         <receiver android:name=".ReminderReceiver" android:exported="true">
             <intent-filter>
