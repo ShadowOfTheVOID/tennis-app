@@ -64,3 +64,34 @@ final class CourtTests: XCTestCase {
         XCTAssertTrue(tip.contains("long") || tip.contains("wide"))
     }
 }
+
+final class WristTests: XCTestCase {
+    /// 100 Hz wrist motion: three swings (15, 20, 12 rad/s), one with a double peak, and a gentle 4 rad/s wave.
+    private func samples() -> [MotionSample] {
+        let bumps: [(t: Double, peak: Double)] = [(1, 15), (1.15, 14), (3, 20), (5, 12), (7, 4)]
+        return (0..<900).map { i in
+            let t = Double(i) / 100
+            let w = 0.5 + bumps.map { $0.peak * exp(-pow((t - $0.t) / 0.04, 2)) }.reduce(0, +)
+            return MotionSample(time: t, ax: 0, ay: 0, az: 1 + w / 10, gx: w * 0.6, gy: w * 0.8, gz: 0)
+        }
+    }
+
+    func testDetectsSwingsOnce() throws {
+        let detector = WristSwingDetector()
+        let swings = samples().compactMap { detector.add($0) }
+        XCTAssertEqual(swings.map { ($0.time * 10).rounded() / 10 }, [1, 3, 5])
+        XCTAssertEqual(swings[1].peakRotation, 20.5 * 180 / .pi, accuracy: 1)
+        XCTAssertGreaterThan(swings[1].peakAcceleration, 2.5)
+
+        let summary = WatchSummary.of(swings, seconds: 600, date: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(summary.swings, 3)
+        XCTAssertEqual(summary.perMinute, 0.3, accuracy: 1e-9)
+        XCTAssertEqual(summary.racketSpeed, 20.5 * 0.9, accuracy: 0.1)
+        XCTAssertEqual(summary.verdict, "Fairly even swing speed")
+
+        let record = PracticeRecord(watch: summary, hand: .right)
+        XCTAssertEqual(record.title, "Watch session")
+        XCTAssertEqual(record.detail, "3 swings in 10 min · fastest ≈ 1,175°/s · Fairly even swing speed")
+        XCTAssertNil(record.score)
+    }
+}

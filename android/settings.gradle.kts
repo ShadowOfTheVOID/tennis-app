@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "ServeCoach"
-include(":analysis", ":app")
+include(":analysis", ":app", ":wear")

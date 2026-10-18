@@ -51,6 +51,10 @@ It works on an **iPhone 11 Pro Max** and on most 64-bit Android phones.
   change over time; your serve rhythm consistency; and your fastest swings.
 - **Weekly practice plan**: a 7-day plan built from the three checks you've missed most in the last
   two weeks, with drills, plus an optional **daily reminder** that tells you that day's part of the plan.
+- **Smartwatch** (Apple Watch and Wear OS): wear the watch on your hitting wrist and tap Start. It
+  feels each swing through its motion sensors, counts your swings, measures how fast your wrist
+  turns, and says how even your swing speed is. At the end the session is sent to the phone and saved
+  in History. It can't tell stroke types apart; use the phone's camera for that.
 - **History**: every stroke and match is saved on the phone, filterable by stroke, with averages, a
   trend and the fix that comes up most often.
 - Right- and left-handed players are supported.
@@ -150,11 +154,12 @@ usable coaching, so it isn't offered.
 | Voice tips | AVSpeechSynthesizer | TextToSpeech |
 | Shared logic (checks, stroke detection, match analysis, coaching) | Swift package `ServeAnalysis` | Kotlin module `:analysis` |
 | Tests | XCTest (`swift test`, also on Linux) | JUnit via Gradle |
+| Watch | watchOS app (Core Motion, WatchConnectivity) | Wear OS app (Compose for Wear OS, Data Layer) |
 | Build | Checked-in Xcode project | Gradle 9, Android Gradle Plugin 9.4, compile SDK 37 |
 
 The posture checks, stroke detection, match analysis, coaching prompts, JSON schema, answer parsing,
 rule-based coach and history are implemented twice, once per language, and kept in sync. Both have the
-same 55 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
+same 56 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
 matches were checked to be byte-for-byte identical on both platforms.
 
 ## Project layout
@@ -165,9 +170,11 @@ Sources/ServeAnalysis/         # Checks, stroke detection, match analysis, coach
 Tests/ServeAnalysisTests/      # Swift unit tests
 App/ServeCoach.xcodeproj       # Xcode project for the iPhone app (open this)
 App/ServeCoach/                # iPhone app: camera, Vision, AI coach, SwiftUI screens
+App/ServeCoachWatch/           # Apple Watch app (separate target in the same Xcode project)
 android/                       # Android Studio project (open this folder)
 android/analysis/              # Shared Kotlin logic + JUnit tests (mirrors ServeAnalysis)
 android/app/                   # Android app: CameraX, ML Kit, LiteRT-LM, Compose screens
+android/wear/                  # Wear OS app
 ```
 
 ## Getting started
@@ -184,6 +191,17 @@ Requirements: a Mac with **Xcode 26** and an iPhone with iOS 17 or later (an iPh
 
 Use a real iPhone, because the camera doesn't work in the simulator.
 
+### Apple Watch (optional)
+
+Requirements: an Apple Watch with watchOS 10 or later, paired with the iPhone.
+
+1. In Xcode, choose the **ServeCoachWatch** target, then *Signing & Capabilities*, and pick your team.
+   Its bundle ID must start with the iPhone app's: if you changed `com.example.ServeCoach`, change
+   `com.example.ServeCoach.watchkitapp` to match, and set the same new iPhone ID in the
+   **WKCompanionAppBundleIdentifier** build setting (`INFOPLIST_KEY_WKCompanionAppBundleIdentifier`).
+2. Select the **ServeCoachWatch** scheme and your watch as the run destination, and press **Run**.
+   It installs on its own, separately from the iPhone app.
+
 ### Android
 
 Requirements: **Android Studio** (recent) and a 64-bit Android phone with Android 8.0 or later.
@@ -193,7 +211,11 @@ Requirements: **Android Studio** (recent) and a 64-bit Android phone with Androi
    Or from a terminal: `cd android && ./gradlew installDebug`.
 3. In the app, open **Settings** and tap **Download** next to Gemma 4 E2B.
 
-`./gradlew assembleRelease` builds a shrunk, about 60 MB APK at
+For the Wear OS app (optional), run `./gradlew :wear:installDebug` with the watch connected over
+Wi-Fi debugging, or pick the **wear** run configuration in Android Studio. It uses the same
+application ID as the phone app, which is what lets the two talk to each other.
+
+`./gradlew :app:assembleRelease` builds a shrunk, about 60 MB APK at
 `android/app/build/outputs/apk/release/`. It's signed with the debug key; use your own signing key
 before publishing.
 
@@ -226,5 +248,14 @@ cd android && ./gradlew :analysis:test  # Kotlin module
   away from the camera isn't seen.
 - Match analysis covers up to 10 minutes per video and takes a few minutes on a phone.
 - The grading thresholds come from standard tennis coaching and haven't been tuned on real players yet.
+- **What has been checked so far:** the shared logic (Swift package and Kotlin module) is covered by
+  unit tests that pass on both platforms. The Android phone and Wear OS apps compile, including
+  shrunk release builds, but haven't been run on a device yet. The iPhone and Apple Watch apps were
+  written without a Mac: their code has been syntax-checked, but it hasn't been compiled in Xcode.
+  Expect a few small fixes on the first build. Ball tracking, court placement, clip export and the
+  watch swing detector were tested on synthetic data, not real footage or real swings.
+- Watch numbers are wrist rotation, not racket speed. The racket-head speed shown is a rough
+  estimate (wrist rotation × about 0.9 m). Wear OS keeps the screen on during a session; on Apple
+  Watch a session runs for up to an hour.
 - The AI review takes 1–2 minutes on a phone. The first run after a download also prepares the
   model, which takes a little longer.

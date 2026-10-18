@@ -69,4 +69,6 @@ dependencies {
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.18.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    // Receives sessions from the Wear OS app.
+    implementation("com.google.android.gms:play-services-wearable:20.0.1")
 }

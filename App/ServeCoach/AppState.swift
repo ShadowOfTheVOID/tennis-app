@@ -9,6 +9,7 @@ final class AppState {
     let models = ModelStore()
     @ObservationIgnored private let coach: AICoach
     @ObservationIgnored private let historyStore: HistoryStore
+    @ObservationIgnored private var watch: WatchLink?
 
     private(set) var history: [PracticeRecord] = []
     /// Coaching reports already produced, by stroke or match id, so reopening a review doesn't re-run the model.
@@ -20,6 +21,11 @@ final class AppState {
         historyStore = HistoryStore(url: support.appendingPathComponent("history.json"))
         coach = AICoach(models: models)
         history = historyStore.records
+        watch = WatchLink { [weak self] summary in
+            guard let self else { return }
+            let hand = Handedness(rawValue: UserDefaults.standard.string(forKey: "handedness") ?? "") ?? .right
+            save(PracticeRecord(watch: summary, hand: hand))
+        }
     }
 
     /// Save a finished stroke to history.

@@ -17,7 +17,6 @@ import com.servecoach.analysis.BallSighting
 import com.servecoach.analysis.CoachModel
 import com.servecoach.analysis.CoachReport
 import com.servecoach.analysis.Handedness
-import com.servecoach.analysis.HistoryStore
 import com.servecoach.analysis.MatchReport
 import com.servecoach.analysis.Phase
 import com.servecoach.analysis.PracticeRecord
@@ -85,7 +84,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     val models = ModelManager(app)
     private val coach = AiCoach(app, models)
-    private val historyStore = HistoryStore(File(app.filesDir, "history.json"))
+    private val historyStore = SharedHistory.store(app)
 
     var hand by mutableStateOf(Handedness.valueOf(prefs.getString("hand", Handedness.RIGHT.name)!!))
         private set
@@ -114,7 +113,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val coaching = mutableStateMapOf<String, Boolean>()
 
     init {
-        viewModelScope.launch { history = withContext(Dispatchers.IO) { historyStore.records } }
+        // Reload whenever something else (e.g. a session from the watch) adds to history.
+        viewModelScope.launch {
+            SharedHistory.changes.collect { history = withContext(Dispatchers.IO) { historyStore.records } }
+        }
     }
 
     fun updateHand(value: Handedness) {

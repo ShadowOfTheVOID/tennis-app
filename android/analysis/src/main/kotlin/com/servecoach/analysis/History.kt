@@ -35,7 +35,7 @@ data class PracticeRecord(
     data class CheckSnapshot(val id: String, val label: String, /** A [Status] key, e.g. "good". */ val status: String)
 
     /** "Forehand", "Match", ... */
-    val title: String get() = StrokeType.entries.firstOrNull { it.key == kind }?.title ?: "Match"
+    val title: String get() = StrokeType.entries.firstOrNull { it.key == kind }?.title ?: if (kind == WATCH_KIND) "Watch session" else "Match"
 
     /** The saved pose at [phase], if any. */
     fun pose(phase: Phase): Pose? {
@@ -48,6 +48,18 @@ data class PracticeRecord(
 
     companion object {
         const val MATCH_KIND = "match"
+        const val WATCH_KIND = "watch"
+
+        fun of(watch: WatchSummary, hand: Handedness) = PracticeRecord(
+            date = watch.date,
+            kind = WATCH_KIND,
+            score = null,
+            detail = "%d swings in %d min · fastest ≈ %,.0f°/s · %s".format(
+                java.util.Locale.US, watch.swings, (watch.seconds / 60).roundToInt(), watch.best, watch.verdict.substringBefore(":")),
+            topFix = null,
+            handedness = hand.name.lowercase(),
+            swingSpeed = watch.racketSpeed,
+        )
 
         fun of(stroke: StrokeResult, hand: Handedness, date: Long = System.currentTimeMillis()) = PracticeRecord(
             date = date,

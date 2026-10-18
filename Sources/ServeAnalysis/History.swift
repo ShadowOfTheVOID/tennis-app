@@ -3,6 +3,7 @@ import Foundation
 /// A saved stroke or match, small enough to keep hundreds of them. Mirrors `PracticeRecord` on Android.
 public struct PracticeRecord: Codable, Identifiable, Sendable, Equatable {
     public static let matchKind = "match"
+    public static let watchKind = "watch"
 
     /// One check's result, kept so progress can be charted per check.
     public struct CheckSnapshot: Codable, Sendable, Equatable {
@@ -63,8 +64,36 @@ public struct PracticeRecord: Codable, Identifiable, Sendable, Equatable {
         keyPoses = [:]
     }
 
+    public init(watch: WatchSummary, hand: Handedness) {
+        id = UUID()
+        date = watch.date
+        kind = Self.watchKind
+        score = nil
+        detail = String(format: "%d swings in %d min · fastest ≈ %@°/s · %@", watch.swings, Int((watch.seconds / 60).rounded()),
+                        Self.grouped(watch.best), String(watch.verdict.split(separator: ":")[0]))
+        topFix = nil
+        handedness = hand.rawValue
+        checks = []
+        swingSpeed = watch.racketSpeed
+        tempo = nil
+        direction = nil
+        keyPoses = [:]
+    }
+
+    /// e.g. "1,146", matching Kotlin's "%,.0f" in the US locale.
+    private static func grouped(_ v: Double) -> String {
+        let n = Int(v.rounded())
+        let digits = String(abs(n))
+        var out = ""
+        for (i, ch) in digits.enumerated() {
+            if i > 0 && (digits.count - i) % 3 == 0 { out.append(",") }
+            out.append(ch)
+        }
+        return (n < 0 ? "-" : "") + out
+    }
+
     /// "Forehand", "Match", ...
-    public var title: String { StrokeType(rawValue: kind)?.title ?? "Match" }
+    public var title: String { StrokeType(rawValue: kind)?.title ?? (kind == Self.watchKind ? "Watch session" : "Match") }
 
     /// The saved pose at `phase`, if any.
     public func pose(at phase: Phase) -> Pose? {

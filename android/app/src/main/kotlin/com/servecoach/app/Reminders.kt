@@ -12,7 +12,6 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import com.servecoach.analysis.HistoryStore
 import com.servecoach.analysis.PracticePlan
 import java.io.File
 import java.util.Calendar
@@ -66,7 +65,7 @@ object Reminders {
         ) return
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "Practice reminders", NotificationManager.IMPORTANCE_DEFAULT))
-        val plan = PracticePlan.make(HistoryStore(File(context.filesDir, "history.json")).records)
+        val plan = PracticePlan.make(SharedHistory.store(context).records)
         val day = plan.days.firstOrNull { it.day == planDay(context) } ?: plan.days.first()
         val open = PendingIntent.getActivity(
             context, 0, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
