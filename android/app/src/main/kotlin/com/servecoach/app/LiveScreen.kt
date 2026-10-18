@@ -138,8 +138,12 @@ private class LiveAnalyzer(
             images[key.phase] = nearest.second
             samples[key.phase] = nearest.third
         }
+        // Frames from just before the first key moment to just after the last, for the replay.
+        val from = (result.keyFrames.minOfOrNull { it.frame.time } ?: result.time) - 0.3
+        val to = (result.keyFrames.maxOfOrNull { it.frame.time } ?: result.time) + 0.3
+        val replay = snapshots.filter { it.first in from..to }.map { ReplayFrame(it.first, it.second, it.third) }
         snapshots.removeAll { it.first <= result.time + 0.5 }
-        return ReviewedStroke(result, images, samples)
+        return ReviewedStroke(result, images, samples, replay)
     }
 
     fun close() = detector.close()

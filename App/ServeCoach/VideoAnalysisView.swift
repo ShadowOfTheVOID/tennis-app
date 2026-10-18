@@ -52,8 +52,8 @@ enum VideoAnalyzer {
     static func analyzeMatch(url: URL, hand: Handedness, progress: @escaping (Double) -> Void) async throws -> AnalyzedMatch {
         let (frames, samples) = try await poses(url: url, fps: matchFPS, maxSeconds: matchMaxSeconds, progress: progress)
         let report = MatchAnalyzer.analyze(frames, hand: hand)
-        let keyTimes = Set(report.strokes.flatMap { $0.keyFrames.map(\.frame.time) })
-        return AnalyzedMatch(report: report, video: url, samples: samples.filter { keyTimes.contains($0.key) })
+        // Every analysed frame's pose is kept, so each stroke's replay can show its skeleton.
+        return AnalyzedMatch(report: report, video: url, samples: samples)
     }
 
     /// Pull the stills for one stroke's key moments from the video.
@@ -72,7 +72,19 @@ enum VideoAnalyzer {
             }
             poseSamples[key.phase] = samples[key.frame.time]
         }
-        return ReviewedStroke(result: result, images: images, samples: poseSamples)
+        // Replay: up to 60 smaller frames at the analysed times around the stroke.
+        var replay: [ReplayFrame] = []
+        if let window = ReviewedStroke.replayWindow(result) {
+            generator.maximumSize = CGSize(width: 540, height: 540)
+            let times = samples.keys.filter { window.contains($0) }.sorted()
+            let step = max(1, Int((Double(times.count) / 60).rounded(.up)))
+            for time in stride(from: 0, to: times.count, by: step).map({ times[$0] }) {
+                if let image = try? await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)).image {
+                    replay.append(ReplayFrame(time: time, image: UIImage(cgImage: image), sample: samples[time]))
+                }
+            }
+        }
+        return ReviewedStroke(result: result, images: images, samples: poseSamples, replay: replay)
     }
 
     /// Decode the video in order and detect a pose about `fps` times a second.

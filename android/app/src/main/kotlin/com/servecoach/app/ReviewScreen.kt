@@ -47,6 +47,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.servecoach.analysis.CoachReport
 import com.servecoach.analysis.CoachSource
+import com.servecoach.analysis.PoseAlignment
+import com.servecoach.analysis.StrokeResult
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import kotlin.math.roundToInt
 
 /** A stroke's key frames and checks, plus the AI coach's improvement plan. */
 @Composable
@@ -58,11 +65,32 @@ fun ReviewScreen(vm: AppViewModel, stroke: ReviewedStroke) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(stroke.result.title, style = MaterialTheme.typography.headlineSmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            stroke.result.keyFrames.forEach { key ->
-                KeyFrame(key.phase.title, stroke.images[key.phase], stroke.samples[key.phase], Modifier.weight(1f))
+        StrokeStats(stroke.result)
+
+        // "Compare with your best": a ghost of your best-scoring stroke of the same kind.
+        val best = remember(stroke.id, vm.history) { vm.bestFor(stroke) }
+        var showGhost by remember { mutableStateOf(false) }
+        if (best != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Compare with your best (${best.score}/100)", Modifier.weight(1f))
+                androidx.compose.material3.Switch(showGhost, { showGhost = it })
             }
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            stroke.result.keyFrames.forEach { key ->
+                val sample = stroke.samples[key.phase]
+                val ghost = if (!showGhost || best == null || sample == null) null else best.pose(key.phase)?.let { g ->
+                    PoseAlignment.align(g, best.direction ?: 1.0, sample.pose, stroke.result.direction)
+                }?.let { PoseSample(it, sample.imageWidth, sample.imageHeight) }
+                KeyFrame(key.phase.title, stroke.images[key.phase], sample, Modifier.weight(1f), ghost)
+            }
+        }
+        if (showGhost && best != null) {
+            Text("White: this stroke. Grey: your best. Lined up at the hips.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        if (stroke.replay.size >= 2) Replay(stroke.replay)
 
         if (report != null) {
             CoachReportCard(report, stroke.result.score, stroke.result.checks.associate { it.id to it.label })
@@ -104,12 +132,13 @@ fun CoachButton(vm: AppViewModel, id: String, onClick: () -> Unit, photos: Boole
 }
 
 @Composable
-private fun KeyFrame(title: String, image: Bitmap?, sample: PoseSample?, modifier: Modifier) {
+private fun KeyFrame(title: String, image: Bitmap?, sample: PoseSample?, modifier: Modifier, ghost: PoseSample? = null) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(12.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
             if (image != null) {
                 Image(image.asImageBitmap(), title, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-                SkeletonOverlay(sample, Modifier.fillMaxSize(), fill = false)
+                ghost?.let { SkeletonOverlay(it, Modifier.fillMaxSize(), fill = false, color = Color.LightGray.copy(alpha = 0.7f)) }
+                SkeletonOverlay(sample, Modifier.fillMaxSize(), fill = false, color = if (ghost != null) Color.White else Color.Green)
             } else {
                 Text("No frame", color = Color.Gray)
             }
@@ -194,4 +223,64 @@ fun CoachReportCard(report: CoachReport, score: Int?, labels: Map<String, String
 @Composable
 private fun Section(title: String) {
     Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** Estimated hand speed and, for serves, rhythm. */
+@Composable
+fun StrokeStats(result: StrokeResult) {
+    val speed = result.swingSpeed
+    val tempo = result.tempo
+    if (speed == null && tempo == null) return
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        speed?.let { StatChip("Hand speed", "≈ %.1f m/s (%d km/h)".format(it, (it * 3.6).roundToInt())) }
+        tempo?.let { StatChip("Rhythm", "%.2f s trophy → contact".format(it)) }
+    }
+}
+
+@Composable
+private fun StatChip(label: String, value: String) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall)
+            Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+/** Frame-by-frame replay with the skeleton, scrubbed with a slider or played at quarter speed. */
+@Composable
+fun Replay(frames: List<ReplayFrame>) {
+    var index by remember(frames) { mutableIntStateOf(0) }
+    var playing by remember(frames) { mutableStateOf(false) }
+    LaunchedEffect(playing) {
+        while (playing) {
+            val gap = if (index + 1 < frames.size) frames[index + 1].time - frames[index].time else 0.1
+            kotlinx.coroutines.delay((gap * 4 * 1000).toLong().coerceIn(40, 1000)) // quarter speed
+            if (index + 1 < frames.size) index++ else { index = 0; playing = false }
+        }
+    }
+    val frame = frames[index.coerceIn(frames.indices)]
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Slow-motion replay", style = MaterialTheme.typography.titleMedium)
+            Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(12.dp)).background(Color.Black)) {
+                Image(frame.image.asImageBitmap(), "Replay frame", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                SkeletonOverlay(frame.sample, Modifier.fillMaxSize(), fill = false)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.IconButton(onClick = { playing = !playing }) {
+                    Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (playing) "Pause" else "Play at quarter speed")
+                }
+                androidx.compose.material3.Slider(
+                    value = index.toFloat(),
+                    onValueChange = { playing = false; index = it.roundToInt() },
+                    valueRange = 0f..(frames.size - 1).toFloat(),
+                    steps = (frames.size - 2).coerceAtLeast(0),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Text("%+.2f s from the first frame · frame %d of %d".format(frame.time - frames.first().time, index + 1, frames.size),
+                style = MaterialTheme.typography.bodySmall)
+        }
+    }
 }

@@ -24,7 +24,12 @@ final class AppState {
 
     /// Save a finished stroke to history.
     func record(_ stroke: ReviewedStroke, hand: Handedness) {
-        save(PracticeRecord(stroke: stroke.result, hand: hand))
+        save(PracticeRecord(id: stroke.id, stroke: stroke.result, hand: hand))
+    }
+
+    /// The best saved stroke of the same kind, not counting this one, for the ghost overlay.
+    func best(for stroke: ReviewedStroke) -> PracticeRecord? {
+        PracticeStats.best(history.filter { $0.id != stroke.id }, kind: stroke.result.type.rawValue)
     }
 
     /// Save an analysed match to history.

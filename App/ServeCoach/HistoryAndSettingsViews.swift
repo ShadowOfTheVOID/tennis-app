@@ -1,7 +1,33 @@
 import ServeAnalysis
 import SwiftUI
 
+/// Progress, the weekly plan, and every saved session.
 struct HistoryView: View {
+    @State private var tab = 0
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("View", selection: $tab) {
+                    Text("Progress").tag(0)
+                    Text("Plan").tag(1)
+                    Text("Sessions").tag(2)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+                switch tab {
+                case 0: ProgressTabView()
+                case 1: PlanView()
+                default: SessionsView()
+                }
+            }
+            .navigationTitle("History")
+        }
+    }
+}
+
+private struct SessionsView: View {
     @Environment(AppState.self) private var app
     @State private var confirmClear = false
     /// A record kind to show, or nil for everything.
@@ -10,7 +36,7 @@ struct HistoryView: View {
     private var records: [PracticeRecord] { app.history.filter { filter == nil || $0.kind == filter } }
 
     var body: some View {
-        NavigationStack {
+        Group {
             Group {
                 if app.history.isEmpty {
                     ContentUnavailableView(
@@ -44,7 +70,6 @@ struct HistoryView: View {
                     }
                 }
             }
-            .navigationTitle("History")
             .confirmationDialog("Clear all history?", isPresented: $confirmClear, titleVisibility: .visible) {
                 Button("Clear", role: .destructive) { app.clearHistory() }
             } message: {
@@ -92,7 +117,7 @@ struct HistoryView: View {
     }
 }
 
-extension HistoryView {
+extension SessionsView {
     private var noun: String {
         guard let filter, let title = app.history.first(where: { $0.kind == filter })?.title.lowercased() else { return "sessions" }
         return filter == PracticeRecord.matchKind ? "matches" : title + "s"

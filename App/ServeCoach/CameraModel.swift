@@ -131,8 +131,12 @@ final class CameraModel: NSObject {
             images[key.phase] = UIImage(cgImage: nearest.image)
             samples[key.phase] = nearest.sample
         }
+        var replay: [ReplayFrame] = []
+        if let window = ReviewedStroke.replayWindow(result) {
+            replay = snapshots.filter { window.contains($0.time) }.map { ReplayFrame(time: $0.time, image: UIImage(cgImage: $0.image), sample: $0.sample) }
+        }
         snapshots.removeAll { $0.time <= result.time + 0.5 }
-        return ReviewedStroke(result: result, images: images, samples: samples)
+        return ReviewedStroke(result: result, images: images, samples: samples, replay: replay)
     }
 
     private func speak(_ result: StrokeResult) {

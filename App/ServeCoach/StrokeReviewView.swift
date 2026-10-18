@@ -7,6 +7,21 @@ struct ReviewedStroke: Identifiable {
     let result: StrokeResult
     let images: [Phase: UIImage]
     let samples: [Phase: PoseSample]
+    /// Frames around the stroke for the slow-motion replay, oldest first.
+    var replay: [ReplayFrame] = []
+
+    /// The time window the replay covers: from just before the first key moment to just after the last.
+    static func replayWindow(_ result: StrokeResult) -> ClosedRange<Double>? {
+        let times = result.keyFrames.map(\.frame.time)
+        guard let first = times.min(), let last = times.max() else { return nil }
+        return (first - 0.3)...(last + 0.3)
+    }
+}
+
+struct ReplayFrame {
+    let time: Double
+    let image: UIImage
+    let sample: PoseSample?
 }
 
 extension ReviewedStroke: Hashable {
@@ -20,17 +35,33 @@ struct StrokeReviewView: View {
     let hand: Handedness
 
     @Environment(AppState.self) private var app
+    @State private var showGhost = false
 
     private var report: CoachReport? { app.reports[stroke.id] }
 
     var body: some View {
+        // "Compare with your best": a ghost of your best-scoring stroke of the same kind.
+        let best = app.best(for: stroke)
         ScrollView {
             VStack(spacing: 16) {
+                StrokeStats(result: stroke.result)
+
+                if let best, let score = best.score {
+                    Toggle("Compare with your best (\(score)/100)", isOn: $showGhost)
+                }
                 HStack(spacing: 8) {
                     ForEach(stroke.result.keyFrames, id: \.phase) { key in
-                        keyFrame(key.phase.title, image: stroke.images[key.phase], sample: stroke.samples[key.phase])
+                        let sample = stroke.samples[key.phase]
+                        keyFrame(key.phase.title, image: stroke.images[key.phase], sample: sample,
+                                 ghost: showGhost ? ghost(best, phase: key.phase, over: sample) : nil)
                     }
                 }
+                if showGhost, best != nil {
+                    Text("White: this stroke. Grey: your best. Lined up at the hips.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                if stroke.replay.count >= 2 { ReplayView(frames: stroke.replay) }
 
                 if let report {
                     CoachReportView(report: report, score: stroke.result.score, labels: labels)
@@ -50,14 +81,23 @@ struct StrokeReviewView: View {
         Dictionary(stroke.result.checks.map { ($0.id, $0.label) }, uniquingKeysWith: { a, _ in a })
     }
 
+    private func ghost(_ best: PracticeRecord?, phase: Phase, over sample: PoseSample?) -> PoseSample? {
+        guard let best, let sample, let pose = best.pose(at: phase),
+              let aligned = PoseAlignment.align(pose, ghostDirection: best.direction ?? 1, to: sample.pose,
+                                                targetDirection: stroke.result.direction)
+        else { return nil }
+        return PoseSample(pose: aligned, imageSize: sample.imageSize)
+    }
+
     @ViewBuilder
-    private func keyFrame(_ title: String, image: UIImage?, sample: PoseSample?) -> some View {
+    private func keyFrame(_ title: String, image: UIImage?, sample: PoseSample?, ghost: PoseSample?) -> some View {
         VStack(spacing: 4) {
             ZStack {
                 Color.black
                 if let image {
                     Image(uiImage: image).resizable().scaledToFit()
-                    SkeletonOverlay(sample: sample, fill: false)
+                    if let ghost { SkeletonOverlay(sample: ghost, fill: false, color: Color(white: 0.85).opacity(0.7)) }
+                    SkeletonOverlay(sample: sample, fill: false, color: ghost == nil ? .green : .white)
                 } else {
                     Image(systemName: "photo").foregroundStyle(.secondary)
                 }
@@ -65,6 +105,73 @@ struct StrokeReviewView: View {
             .aspectRatio(3 / 4, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             Text(title).font(.caption.weight(.semibold))
+        }
+    }
+}
+
+/// Estimated hand speed and, for serves, the trophy-to-contact rhythm.
+struct StrokeStats: View {
+    let result: StrokeResult
+
+    var body: some View {
+        if result.swingSpeed != nil || result.tempo != nil {
+            HStack(spacing: 8) {
+                if let speed = result.swingSpeed {
+                    chip("Hand speed", String(format: "≈ %.1f m/s (%d km/h)", speed, Int((speed * 3.6).rounded())))
+                }
+                if let tempo = result.tempo { chip("Rhythm", String(format: "%.2f s trophy → contact", tempo)) }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func chip(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.caption2)
+            Text(value).font(.callout.weight(.semibold))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// Frame-by-frame replay with the skeleton, scrubbed with a slider or played at quarter speed.
+struct ReplayView: View {
+    let frames: [ReplayFrame]
+    @State private var index = 0
+    @State private var playing = false
+
+    var body: some View {
+        let frame = frames[min(index, frames.count - 1)]
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Slow-motion replay").font(.headline)
+            ZStack {
+                Color.black
+                Image(uiImage: frame.image).resizable().scaledToFit()
+                SkeletonOverlay(sample: frame.sample, fill: false)
+            }
+            .aspectRatio(3 / 4, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            HStack {
+                Button { playing.toggle() } label: {
+                    Image(systemName: playing ? "pause.fill" : "play.fill")
+                }
+                .accessibilityLabel(playing ? "Pause" : "Play at quarter speed")
+                Slider(value: Binding(get: { Double(index) }, set: { playing = false; index = Int($0.rounded()) }),
+                       in: 0...Double(frames.count - 1), step: 1)
+            }
+            Text(String(format: "%+.2f s from the first frame · frame %d of %d", frame.time - frames[0].time, index + 1, frames.count))
+                .font(.caption)
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .task(id: playing) {
+            while playing {
+                let gap = index + 1 < frames.count ? frames[index + 1].time - frames[index].time : 0.1
+                try? await Task.sleep(for: .seconds(min(max(gap * 4, 0.04), 1))) // quarter speed
+                guard playing else { break }
+                if index + 1 < frames.count { index += 1 } else { index = 0; playing = false }
+            }
         }
     }
 }

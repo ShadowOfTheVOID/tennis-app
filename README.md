@@ -28,6 +28,16 @@ It works on an **iPhone 11 Pro Max** and on most 64-bit Android phones.
   - lists what you're already doing well,
   - gives up to three prioritised fixes, each with why it matters, an on-court cue and a drill,
   - suggests a focus for your next practice.
+- **Stroke review extras**:
+  - a **slow-motion replay** with your skeleton, played at quarter speed or scrubbed frame by frame,
+  - **compare with your best**: your best-scoring stroke of the same kind as a grey ghost skeleton,
+    lined up at the hips and scaled to your size,
+  - estimated **hand speed** at contact (your hand, not the racket head, which moves faster),
+  - **serve rhythm**: the time from trophy position to contact.
+- **Progress**: for each stroke, every check's weekly share graded good, as a small chart with the
+  change over time; your serve rhythm consistency; and your fastest swings.
+- **Weekly practice plan**: a 7-day plan built from the three checks you've missed most in the last
+  two weeks, with drills, plus an optional **daily reminder** that tells you that day's part of the plan.
 - **History**: every stroke and match is saved on the phone, filterable by stroke, with averages, a
   trend and the fix that comes up most often.
 - Right- and left-handed players are supported.
@@ -131,7 +141,7 @@ usable coaching, so it isn't offered.
 
 The posture checks, stroke detection, match analysis, coaching prompts, JSON schema, answer parsing,
 rule-based coach and history are implemented twice, once per language, and kept in sync. Both have the
-same 39 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
+same 45 unit tests built on identical synthetic swings. The AI prompts for serves, groundstrokes and
 matches were checked to be byte-for-byte identical on both platforms.
 
 ## Project layout

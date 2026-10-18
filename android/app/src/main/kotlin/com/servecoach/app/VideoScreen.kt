@@ -71,9 +71,7 @@ object VideoAnalyzer {
     suspend fun analyzeMatch(context: Context, uri: Uri, hand: Handedness, onProgress: (Float) -> Unit): AnalyzedMatch =
         withContext(Dispatchers.Default) {
             val (frames, samples) = poses(context, uri, MATCH_FPS, MATCH_MAX_SECONDS, fast = true, onProgress)
-            val report = MatchAnalyzer.analyze(frames, hand)
-            val keyTimes = report.strokes.flatMap { s -> s.keyFrames.map { it.frame.time } }.toSet()
-            AnalyzedMatch(report, uri, samples.filterKeys { it in keyTimes })
+            AnalyzedMatch(MatchAnalyzer.analyze(frames, hand), uri, samples)
         }
 
     /** Pull the stills for one stroke's key moments from the video. */
@@ -89,7 +87,14 @@ object VideoAnalyzer {
                         ?.let { images[key.phase] = it }
                     samples[key.frame.time]?.let { poseSamples[key.phase] = it }
                 }
-                ReviewedStroke(result, images, poseSamples)
+                // Every analysed frame around the stroke, smaller, for the slow-motion replay.
+                val from = (result.keyFrames.minOfOrNull { it.frame.time } ?: result.time) - 0.3
+                val to = (result.keyFrames.maxOfOrNull { it.frame.time } ?: result.time) + 0.3
+                val replay = samples.keys.filter { it in from..to }.sorted().take(60).mapNotNull { t ->
+                    retriever.getScaledFrameAtTime((t * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST, 540, 540)
+                        ?.let { ReplayFrame(t, it, samples[t]) }
+                }
+                ReviewedStroke(result, images, poseSamples, replay)
             } finally {
                 retriever.release()
             }

@@ -34,8 +34,26 @@ import com.servecoach.analysis.HistoryStats
 import java.text.DateFormat
 import java.util.Date
 
+/** Progress, the weekly plan, and every saved session. */
 @Composable
 fun HistoryScreen(vm: AppViewModel) {
+    var tab by remember { mutableStateOf(0) }
+    Column(Modifier.fillMaxSize()) {
+        androidx.compose.material3.SecondaryTabRow(selectedTabIndex = tab) {
+            listOf("Progress", "Plan", "Sessions").forEachIndexed { i, title ->
+                androidx.compose.material3.Tab(selected = tab == i, onClick = { tab = i }, text = { Text(title) })
+            }
+        }
+        when (tab) {
+            0 -> ProgressTab(vm)
+            1 -> PlanTab(vm)
+            else -> SessionsTab(vm)
+        }
+    }
+}
+
+@Composable
+private fun SessionsTab(vm: AppViewModel) {
     var filter by remember { mutableStateOf<String?>(null) }
     val kinds = vm.history.map { it.kind }.distinct()
     val records = vm.history.filter { filter == null || it.kind == filter }

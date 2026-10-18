@@ -17,6 +17,7 @@ import com.servecoach.analysis.HistoryStore
 import com.servecoach.analysis.MatchReport
 import com.servecoach.analysis.Phase
 import com.servecoach.analysis.PracticeRecord
+import com.servecoach.analysis.PracticeStats
 import com.servecoach.analysis.StrokeResult
 import com.servecoach.analysis.StrokeType
 import kotlinx.coroutines.Dispatchers
@@ -26,11 +27,17 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
+/** One frame of a stroke's slow-motion replay. */
+data class ReplayFrame(val time: Double, val image: Bitmap, val sample: PoseSample?)
+
 /** A completed stroke with stills of its key moments, kept together for review and AI coaching. */
 data class ReviewedStroke(
     val result: StrokeResult,
     val images: Map<Phase, Bitmap>,
     val samples: Map<Phase, PoseSample>,
+    /** Frames around the stroke, oldest first, for frame-by-frame replay. */
+    val replay: List<ReplayFrame> = emptyList(),
+    /** Also the id of its history record, so "compare with your best" can skip this stroke. */
     val id: String = UUID.randomUUID().toString(),
 )
 
@@ -41,7 +48,7 @@ data class ReviewedStroke(
 data class AnalyzedMatch(
     val report: MatchReport,
     val video: Uri,
-    /** Pose at each stroke's key moments, for drawing the skeleton. */
+    /** Pose at every analysed frame, by time, for skeletons and replays. */
     val samples: Map<Double, PoseSample>,
     val id: String = UUID.randomUUID().toString(),
 )
@@ -143,7 +150,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Save a finished stroke to history. */
-    fun record(stroke: ReviewedStroke) = save(PracticeRecord.of(stroke.result, hand))
+    fun record(stroke: ReviewedStroke) = save(PracticeRecord.of(stroke.result, hand).copy(id = stroke.id))
+
+    /** Your best saved stroke of the same kind, other than [stroke] itself. */
+    fun bestFor(stroke: ReviewedStroke): PracticeRecord? =
+        PracticeStats.best(history.filter { it.id != stroke.id }, stroke.result.type.key)
 
     /** Save an analysed match to history. */
     fun record(match: AnalyzedMatch) = save(PracticeRecord.of(match.report, hand))
